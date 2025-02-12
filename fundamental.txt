@@ -1,0 +1,42 @@
+What is Fundamental Analysis?
+Analyzing a company's financials, competitive position, and overall market environment to estimate its fair value (intrinsic value; real value of the company)
+
+Key Difference with Technical Analysis
+FA focuses on the intrinsic value and LONG-term trends (can be short-term due to a breaking news)
+TA focuses on price action and SHORT-term trends
+
+Intrinsic Value vs. Market price
+The market price can differ in the short term from a company's true worth (intrinsic value); repetition of going above and below -> buy when it is undervalued!
+
+Macro & Industry Factors -> FA
+Economic data, interest rates, and industry trends can significantly affect a stock's or crypto's performance
+
+Financial Statements
+Summaries of a company's financial performance and position essential for evaluating a company's health and growth potential.
+Together, these statements give a complete picture of a company's financial health.
+
+    Three Main Types:
+    1) Income Statement: Tracks revenue (selling products & services), expenses (making products & services; overall operation, etc), and profit (revenue - expenses - taxes) ("How much money are they making?")
+    2) Balance Sheet: Show assets (owns), liabilities (owes), and equity (assets - liabilities) at a specific point in time ("What do they own and owe?")
+    3) Cash Flow Statement: Reveals cash inflows and outflows (operating, investing, financing activities) ("Do they manage their cash well")
+
+Finanical Metrics
+Calculations that help evaluate a company's financial health and performance.
+Easier to compare companies and identify potential investments.
+
+    1) Valuation Metrics: Indicate if a stock is expensive or cheap
+            Price-to-Earnings (P/E) Ratio = Market Price / Earnings per Share (lower P/E -> undervalued -> buy)   
+            Price-to-Book (P/B) Ratio = Market Price / Book Value per Share (far from perfect metric)
+            Pirce-to-Sales (P/S) Ratio = Market Price / Revenue per Share (need to consider the company's growth potential)
+
+    2) Profitability Metrics: Measure how efficiently a company generates profits
+            Net Profit Margin = Net Income / Revenue (cost efficiency)
+            Gross Margin = (Revenue - Cost of Goods Sold) / Revenue (production efficiency)
+
+            Return on Equity (ROE) = Net Income / Shareholder's Equity (efficient use of investor's money)
+            Return on Assets (ROA) = Net Income / Total Assets (efficient use of assets)
+
+    3) Growth Metrics: Highlight a company's potental for future expansion
+
+
+
