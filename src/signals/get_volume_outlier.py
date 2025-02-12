@@ -114,7 +114,7 @@ async def monitor_symbols(symbols, coin_data, investor_type):
 # Main function to monitor multiple symbols
 async def get_volume_outlier():
     balanced =  await monitor_symbols(list(BALANCED_COIN_DATA.keys()), BALANCED_COIN_DATA, investor_type="Balanced")
-    aggressive =  await monitor_symbols(list(AGGRESSIVE_COIN_DATA.keys()), AGGRESSIVE_COIN_DATA, investor_type="Aggressive")
+    #aggressive =  await monitor_symbols(list(AGGRESSIVE_COIN_DATA.keys()), AGGRESSIVE_COIN_DATA, investor_type="Aggressive")
 
     msg = ""
     if balanced:

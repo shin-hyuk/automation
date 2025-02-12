@@ -1,3 +1,6 @@
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).parent.parent))
 import requests
 from bs4 import BeautifulSoup
 import re
@@ -6,7 +9,7 @@ import asyncio
 from datetime import datetime
 from dotenv import load_dotenv
 import os
-from utils.telegram_utils import send_message
+from utils import send_message
 
 # Load environment variables
 load_dotenv()

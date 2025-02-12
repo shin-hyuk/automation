@@ -19,9 +19,3 @@ async def send_message(message, chat_ids=None, parse_mode="Markdown"):
             print(f"Message sent successfully to chat_id: {chat_id}")
         except Exception as e:
             print(f"Failed to send message to chat_id: {chat_id}. Error: {e}")
-
-def escape_markdown(text):
-    escape_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
-    for char in escape_chars:
-        text = text.replace(char, f"\\{char}")
-    return text
