@@ -56,7 +56,9 @@ def get_max(normalized_trends):
     max_gain = last_month_change.idxmax()
     max_loss = last_month_change.idxmin()
     
-    msg = f"{max_gain} saw the largest increase, gaining *{last_month_change[max_gain]:.2f}%* in popularity over the last month."
+    msg = ""
+    if last_month_change[max_gain] > 0:
+        msg += f"{max_gain} saw the largest increase, gaining *{last_month_change[max_gain]:.2f}%* in popularity over the last month."
 
     if last_month_change[max_loss] < 0:
         msg += f"\n{max_loss} saw the largest decline, losing *{abs(last_month_change[max_loss]):.2f}%* in popularity over the last month."

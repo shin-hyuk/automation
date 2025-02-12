@@ -12,21 +12,19 @@ load_dotenv()
 TRADE_CHAT_IDS = os.getenv("TRADE_CHAT_IDS", "").split(",")
 
 async def send_signals():
-    print("Starting signals workflow...")
-
     try:
-        # Get and send signals
-        signal = await get_signals()  # Add await here since get_signals is now async
+        print("\nAnalyzing market signals...")
+        signal = await get_signals()
         if signal:
+            print("Signals found, sending to channels...")
             await send_message(signal, chat_ids=TRADE_CHAT_IDS)
             print("Signals sent successfully")
         else:
-            print("No signals to send")
-
-        print("Signals workflow completed.")
+            print("No trading signals detected")
+            
     except Exception as e:
-        error_msg = f"Error in signals workflow: {str(e)}"
-        print(error_msg)
+        print(f"Failed to process trading signals: {str(e)}")
+        raise
 
 if __name__ == "__main__":
     asyncio.run(send_signals())

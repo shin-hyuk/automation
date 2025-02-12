@@ -37,7 +37,7 @@ def connect_to_database():
         )
         return connection
     except Exception as e:
-        print(f"Error connecting to MySQL: {e}")
+        print("Unable to connect to database")
         return None
 
 def initialize_database():
@@ -58,35 +58,28 @@ def initialize_database():
                 )
             """)
             connection.commit()
-            print("Table `bitcoin_holdings` ensured.")
     finally:
         connection.close()
 
 def fetch_data_with_requests():
-    """Fetch HTML content using requests."""
     try:
-        print("Fetching page content...")
         response = requests.get(URL)
         response.raise_for_status()
         return response.text
-    except requests.RequestException as e:
-        print(f"Error fetching the page: {e}")
+    except requests.RequestException:
         return None
 
 def extract_specific_data(html_content):
     """Extract specific data from the HTML content."""
     if not html_content:
-        print("No HTML content to parse.")
         return []
 
     soup = BeautifulSoup(html_content, "html.parser")
     tables = soup.find_all("table", class_="treasuries-table")
     if len(tables) < 3:
-        print("Not enough tables found in the HTML.")
         return []
 
     table = tables[2]
-    print("Correct table found! Extracting data...")
     tbody = table.find("tbody")
     rows = tbody.find_all("tr")[:3]
     extracted_data = []
@@ -118,7 +111,6 @@ def save_data_to_mysql(data):
     try:
         with connection.cursor() as cursor:
             for entry in data:
-                # Check if data already exists for today
                 cursor.execute("""
                     SELECT * FROM bitcoin_holdings
                     WHERE company_name = %s AND date = %s
@@ -126,13 +118,11 @@ def save_data_to_mysql(data):
                 existing_entry = cursor.fetchone()
 
                 if not existing_entry:
-                    # Insert new data
                     cursor.execute("""
                         INSERT INTO bitcoin_holdings (company_name, btc, value, date)
                         VALUES (%s, %s, %s, %s)
                     """, (entry["company_name"], entry["btc"], entry["value"], entry["date"]))
             connection.commit()
-            print("Data saved to MySQL.")
     finally:
         connection.close()
 
@@ -149,10 +139,7 @@ def load_data_from_mysql():
     )
     cursor = conn.cursor()
 
-    # Get yesterday's date
     date_yesterday = (datetime.today() - timedelta(days=1)).strftime("%Y-%m-%d")
-
-    # Query for yesterday's data
     query = """
         SELECT company_name, btc, date 
         FROM bitcoin_holdings 
@@ -162,9 +149,6 @@ def load_data_from_mysql():
 
     data = cursor.fetchall()
     conn.close()
-
-    if not data:
-        print(f"⚠️ No data found for {date_yesterday} in the database.")
 
     return data
 
@@ -219,7 +203,6 @@ def calculate_monthly_change(new_data, old_data):
 def generate_changes_table(new_data, daily_changes=None, monthly_changes=None):
     """Generate formatted table string (based on BTC quantity)."""
     if not new_data:
-        print("No new data provided to generate the table.")
         return None
 
     header_format = "{:<20}  {:<15}  {:<15}  {:<15}"
@@ -231,11 +214,9 @@ def generate_changes_table(new_data, daily_changes=None, monthly_changes=None):
         daily_change = next((c["daily_change"] for c in (daily_changes or []) if c["company_name"] == new["company_name"]), None)
         monthly_change = next((c["monthly_change"] for c in (monthly_changes or []) if c["company_name"] == new["company_name"]), None)
 
-        # Get today's date and weekday
         today = datetime.now()
-        weekday = today.strftime("%A")  # Monday, Tuesday, etc.
+        weekday = today.strftime("%A")
 
-        # Handle missing daily change data
         if daily_change is None:
             if weekday in ["Saturday", "Sunday"]:
                 daily_change_str = "No Data (Weekend)"
@@ -244,7 +225,6 @@ def generate_changes_table(new_data, daily_changes=None, monthly_changes=None):
         else:
             daily_change_str = f"{daily_change:.2f}" if isinstance(daily_change, float) else daily_change
 
-        # Handle missing monthly change data
         monthly_change_str = f"{monthly_change:.2f}" if isinstance(monthly_change, float) else "Shown after 1 month"
 
         latest_btc_str = f"{new['btc']}"
@@ -253,29 +233,26 @@ def generate_changes_table(new_data, daily_changes=None, monthly_changes=None):
     return table
 
 def get_chain():
-    # Ensure the database is ready
     initialize_database()
-
-    # Fetch and process data
     html_content = fetch_data_with_requests()
     if not html_content:
-        return "Failed to fetch data."
+        print("Unable to fetch HTML content from website")
+        return None
 
     new_data = extract_specific_data(html_content)
-    old_data = load_data_from_mysql()
+    if not new_data:
+        print("Required table structure not found in HTML content") 
+        return None
 
-    # Save new data to MySQL
+    old_data = load_data_from_mysql()
     save_data_to_mysql(new_data)
 
-    # Determine today's and yesterday's dates
     date_today = datetime.today().strftime("%Y-%m-%d")
     date_yesterday = (datetime.today() - timedelta(days=1)).strftime("%Y-%m-%d")
 
-    # Calculate daily and monthly changes
     daily_changes = calculate_daily_change(new_data, old_data, date_today, date_yesterday) if old_data else []
     monthly_changes = calculate_monthly_change(new_data, old_data) if old_data else []
 
-    # Generate the changes table
     table = generate_changes_table(new_data, daily_changes, monthly_changes)
     if table:
         msg = f"📖 *Bitcoin Public Company*\n"
@@ -283,8 +260,6 @@ def get_chain():
         msg += table
         msg += "```"
         return msg
-
-    return "No data available."
 
 if __name__ == "__main__":
     # For testing purposes
