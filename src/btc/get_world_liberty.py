@@ -453,15 +453,22 @@ def generate_table(html_content=None):
                     if len(display_cryptos) >= 5:
                         break
 
-    # Generate table
-    table_output = f"🦅 *World Liberty Fi* (Total Portfolio Value: ${total_value:,.2f})\n"
-    header = "{:<10} {:<12} {:<12}".format("Asset", "Today", "Yesterday")
-    table_output += "```\n" + header + "\n" + "-" * 34 + "\n"
-
+    # Create a list of tuples (crypto, current_value) for sorting
+    crypto_values = []
     for crypto in display_cryptos:
-        if crypto not in latest_data:
-            continue
-            
+        if crypto in latest_data and latest_data[crypto]:
+            crypto_values.append((crypto, float(latest_data[crypto])))
+    
+    # Sort by current value in descending order
+    crypto_values.sort(key=lambda x: x[1], reverse=True)
+    
+    # Generate table
+    table_output = f"World Liberty Fi (Total Portfolio Value: ${total_value:,.2f})\n"
+    header = "{:<10} {:<12} {:<12}".format("Asset", "Today", "Yesterday")
+    table_output += "```\n" + header + "\n" + "-" * 45 + "\n"
+
+    # Use sorted crypto list
+    for crypto, _ in crypto_values:
         current_value = latest_data[crypto]
         if not current_value:
             continue
@@ -488,7 +495,7 @@ def generate_table(html_content=None):
             crypto, current_formatted, previous_formatted
         )
 
-    table_output += "```"
+    table_output += "```\n\n"
     
     # Add insights below table
     table_output += insights
