@@ -78,7 +78,7 @@ def save_to_mysql(network_value, custody_value):
             """, (today_date, network_value, custody_value))
 
             connection.commit()
-            print(f"✅ Data saved to MySQL (Overwritten if existed): {today_date}, {network_value}, {custody_value}")
+            print(f"MySQL: Data saved (Overwritten if existed) - Date: {today_date}, Network: {network_value}, Custody: {custody_value}")
     finally:
         connection.close()
 
@@ -211,7 +211,7 @@ def get_insight():
         insights.append(f"{abs(network_change):.4f} BTC was redeemed, decreasing WBTC supply and potentially moving to direct BTC holdings.")
 
     if not insights:
-        insights.append("No changes in both custody and network values.")
+        return "No changes in both custody and network values."
         
     msg = "\n".join(f"*{i + 1})* {line}" for i, line in enumerate(insights) if line.strip())
     msg += "\n"

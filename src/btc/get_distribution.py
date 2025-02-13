@@ -96,21 +96,23 @@ def get_reversal(df):
             else:
                 selling_reversals[category] = streak_count
 
-    max_buying_streak = max(buying_reversals.values())
-    max_selling_streak = max(selling_reversals.values())
-
-    longest_buying_categories = [k for k, v in buying_reversals.items() if v == max_buying_streak]
-    longest_selling_categories = [k for k, v in selling_reversals.items() if v == max_selling_streak]
 
     messages = []
-    if max_buying_streak > 1:
-        messages.append(
-            f"{', '.join(longest_buying_categories)} shifted to buying *after {max_buying_streak} days of selling*."
-        )
-    if max_selling_streak > 1:
-        messages.append(
-            f"{', '.join(longest_selling_categories)} shifted to selling *after {max_selling_streak} days of buying*."
-        )
+    if buying_reversals:
+        max_buying_streak = max(buying_reversals.values())
+        if max_buying_streak > 1:
+            longest_buying_categories = [k for k, v in buying_reversals.items() if v == max_buying_streak]
+            messages.append(
+                f"{', '.join(longest_buying_categories)} shifted to buying *after {max_buying_streak} days of selling*."
+            )
+
+    if selling_reversals:
+        max_selling_streak = max(selling_reversals.values())
+        if max_selling_streak > 1:
+            longest_selling_categories = [k for k, v in selling_reversals.items() if v == max_selling_streak]
+            messages.append(
+                f"{', '.join(longest_selling_categories)} shifted to selling *after {max_selling_streak} days of buying*."
+            )
 
     return "\n".join(messages) if messages else "No reversals detected."
 
