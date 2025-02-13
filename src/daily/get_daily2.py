@@ -5,7 +5,6 @@ def get_daily2():
     print("\nGenerating daily report (part 2)...")
     try:
         msg = btc.get_chain()
-        msg += "\n" + btc.get_etf()
         msg += "\n" + btc.get_world_liberty()
         print("Daily report (part 2) completed\n")
         return msg

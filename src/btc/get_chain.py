@@ -1,266 +1,417 @@
-from datetime import datetime, timedelta
-import asyncio
-import requests
-from bs4 import BeautifulSoup
+import time
+import random
+import docker
 import pymysql
+import pymysql.cursors
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from bs4 import BeautifulSoup
+from datetime import datetime
+import pandas as pd
 from dotenv import load_dotenv
 import os
 
 # Load environment variables
 load_dotenv()
 
-# MySQL database connection details
-DB_HOST = os.getenv('DB_HOST')
-DB_USER = os.getenv('DB_USER')
-DB_PASSWORD = os.getenv('DB_PASSWORD')
-DB_NAME = os.getenv('DB_NAME')
-DB_PORT = int(os.getenv('DB_PORT', 3306))
+# URLs for different entities
+URLS = {
+    #ETFs/ETPs
+    'BlackRock': 'https://intel.arkm.com/explorer/entity/blackrock',
+    'Fidelity': 'https://intel.arkm.com/explorer/entity/fidelity-custody',
+    'Grayscale': 'https://intel.arkm.com/explorer/entity/grayscale',
+    'ARK Invest': 'https://intel.arkm.com/explorer/entity/ark-invest',
+    'Bitwise': 'https://intel.arkm.com/explorer/entity/bitwise',
+    
+    #CEXs
+    'Binance': 'https://intel.arkm.com/explorer/entity/binance',
+    'Coinbase': 'https://intel.arkm.com/explorer/entity/coinbase',
+    'Bitfinex': 'https://intel.arkm.com/explorer/entity/bitfinex',
+    'Kraken': 'https://intel.arkm.com/explorer/entity/kraken',
+    'Robinhood': 'https://intel.arkm.com/explorer/entity/robinhood',
 
-# Ensure the correct event loop policy for Windows
-if __name__ == "__main__":
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    #Public Company 
+    'MicroStrategy': 'https://intel.arkm.com/explorer/entity/microstrategy',
+    'WorldLiberty': 'https://intel.arkm.com/explorer/entity/worldlibertyfi',
+    'USGovernment': 'https://intel.arkm.com/explorer/entity/usg'
+}
 
-# Target URL
-URL = "https://treasuries.bitbo.io/"
+USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0'
+]
 
 def connect_to_database():
-    """Connect to the MySQL database."""
+    """Connect to MySQL database."""
     try:
         connection = pymysql.connect(
-            host=DB_HOST,
-            user=DB_USER,
-            password=DB_PASSWORD,
-            database=DB_NAME,
-            port=DB_PORT,
-            charset='utf8mb4',
+            host=os.getenv('DB_HOST'),
+            user=os.getenv('DB_USER'),
+            password=os.getenv('DB_PASSWORD'),
+            database=os.getenv('DB_NAME'),
             cursorclass=pymysql.cursors.DictCursor
         )
         return connection
     except Exception as e:
-        print("Unable to connect to database")
+        print(f"Database Connection Error: {e}")
         return None
 
 def initialize_database():
-    """Create the necessary table if it doesn't exist."""
+    """Initialize database with table for BTC holdings."""
     connection = connect_to_database()
     if not connection:
         return
 
     try:
         with connection.cursor() as cursor:
+            # Create base table with date column
             cursor.execute("""
-                CREATE TABLE IF NOT EXISTS bitcoin_holdings (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    company_name VARCHAR(255) NOT NULL,
-                    btc DECIMAL(20, 8) NOT NULL,
-                    value DECIMAL(20, 8) NOT NULL,
-                    date DATE NOT NULL
+                CREATE TABLE IF NOT EXISTS btc_holdings (
+                    date DATE PRIMARY KEY
                 )
             """)
+            
+            # Get existing columns
+            cursor.execute("SHOW COLUMNS FROM btc_holdings")
+            existing_columns = {row['Field'] for row in cursor.fetchall()}
+            
+            # Add columns for each entity if they don't exist
+            for entity in URLS.keys():
+                column_name = entity.replace(' ', '_')
+                if column_name not in existing_columns:
+                    try:
+                        cursor.execute(f"""
+                            ALTER TABLE btc_holdings 
+                            ADD COLUMN `{column_name}` DECIMAL(20,8)
+                        """)
+                    except Exception as e:
+                        print(f"Error adding column {column_name}: {e}")
+            
             connection.commit()
+            print("Table btc_holdings is ready")
+            
+    except Exception as e:
+        print(f"Error initializing database: {e}")
     finally:
         connection.close()
 
-def fetch_data_with_requests():
+def fetch_data_with_firefox(url):
+    """Fetch data using Selenium in Docker container."""
+    driver = None
+
     try:
-        response = requests.get(URL)
-        response.raise_for_status()
-        return response.text
-    except requests.RequestException:
+        options = webdriver.FirefoxOptions()
+        options.add_argument(f"user-agent={random.choice(USER_AGENTS)}")
+        options.add_argument("--headless")
+        
+        driver = webdriver.Remote(
+            command_executor="http://localhost:4444/wd/hub",
+            options=options
+        )
+
+        print(f"Launching Firefox Browser for {url}...")
+        driver.get(url)
+
+        WebDriverWait(driver, 15).until(
+            EC.presence_of_element_located((By.CLASS_NAME, "Portfolio_holdingsContainer__XyaUq"))
+        )
+        time.sleep(5)
+
+        print("Page Loaded. Extracting content...")
+        return driver.page_source
+
+    except Exception as e:
+        print(f"Firefox Error: {e}")
+        return None
+    finally:
+        if driver:
+            driver.quit()
+
+def extract_btc_holdings(html_content):
+    """Extract BTC holdings from HTML content."""
+    if not html_content:
         return None
 
-def extract_specific_data(html_content):
-    """Extract specific data from the HTML content."""
-    if not html_content:
-        return []
+    try:
+        soup = BeautifulSoup(html_content, "html.parser")
+        holdings_containers = soup.find_all("div", class_="Portfolio_holdingsContainer__XyaUq")
+        
+        for container in holdings_containers:
+            symbol_span = container.find("span", class_="Portfolio_holdingsSymbol__uOpkQ")
+            if symbol_span and symbol_span.get_text(strip=True) == "BTC":
+                # Get amount (first span in container)
+                amount_span = container.find("span")
+                if amount_span:
+                    amount_text = amount_span.get_text(strip=True)
+                    
+                    # Convert B/M/K values to full numbers
+                    try:
+                        if amount_text.endswith('B'):
+                            amount = float(amount_text[:-1]) * 1_000_000_000
+                        elif amount_text.endswith('M'):
+                            amount = float(amount_text[:-1]) * 1_000_000
+                        elif amount_text.endswith('K'):
+                            amount = float(amount_text[:-1]) * 1_000
+                        else:
+                            amount = float(amount_text.replace(",", ""))
 
-    soup = BeautifulSoup(html_content, "html.parser")
-    tables = soup.find_all("table", class_="treasuries-table")
-    if len(tables) < 3:
-        return []
+                        # Validate the converted amount
+                        if not isinstance(amount, (int, float)):
+                            print(f"Invalid amount type: {type(amount)}")
+                            continue
+                        if amount < 0:
+                            print(f"Negative amount: {amount}")
+                            continue
 
-    table = tables[2]
-    tbody = table.find("tbody")
-    rows = tbody.find_all("tr")[:3]
-    extracted_data = []
-    for row in rows:
-        company_name = row.find("td", class_="td-company").get_text(strip=True)
+                        return amount
 
-        if company_name == "Marathon Digital Holdings Inc":
-            company_name = "Marathon Digital"
+                    except ValueError as e:
+                        print(f"Error converting amount: {amount_text} - {str(e)}")
+                        continue
+                    except Exception as e:
+                        print(f"Error processing amount: {str(e)}")
+                        continue
+                        
+        return 0  # Return 0 if BTC not found
+    except Exception as e:
+        print(f"Extraction Error: {e}")
+        return None
 
-        btc = row.find("td", class_="td-company_btc").get_text(strip=True).replace(',', '')
-        value = row.find("td", class_="td-value").get_text(strip=True).replace(',', '').replace('$', '')
+def save_data_to_mysql(entity, btc_amount):
+    """Save extracted BTC data into MySQL."""
+    if btc_amount is None:
+        print(f"No BTC data to save for {entity}")
+        return
 
-        extracted_data.append({
-            "date": datetime.now().strftime("%Y-%m-%d"),
-            "company_name": company_name,
-            "btc": float(btc),
-            "value": float(value) / 1e6  # Convert to millions
-        })
-
-    return extracted_data
-
-def save_data_to_mysql(data):
-    """Save extracted data to the MySQL database."""
     connection = connect_to_database()
     if not connection:
         return
 
-    today_date = datetime.now().strftime("%Y-%m-%d")
     try:
         with connection.cursor() as cursor:
-            for entry in data:
-                cursor.execute("""
-                    SELECT * FROM bitcoin_holdings
-                    WHERE company_name = %s AND date = %s
-                """, (entry["company_name"], today_date))
-                existing_entry = cursor.fetchone()
-
-                if not existing_entry:
-                    cursor.execute("""
-                        INSERT INTO bitcoin_holdings (company_name, btc, value, date)
-                        VALUES (%s, %s, %s, %s)
-                    """, (entry["company_name"], entry["btc"], entry["value"], entry["date"]))
+            today = datetime.now().date()
+            column_name = entity.replace(' ', '_')
+            
+            # First try to insert the date if it doesn't exist
+            cursor.execute("""
+                INSERT IGNORE INTO btc_holdings (date)
+                VALUES (%s)
+            """, (today,))
+            
+            # Then update the entity's column for today
+            cursor.execute(f"""
+                UPDATE btc_holdings 
+                SET `{column_name}` = %s
+                WHERE date = %s
+            """, (btc_amount, today))
+            
             connection.commit()
+            print(f"Successfully saved data for {entity}")
+            
+    except Exception as e:
+        print(f"MySQL Save Error: {e}")
     finally:
         connection.close()
 
 def load_data_from_mysql():
-    """Fetch yesterday's BTC data from MySQL."""
-    conn = pymysql.connect(
-        host=DB_HOST,
-        user=DB_USER,
-        password=DB_PASSWORD,
-        database=DB_NAME,
-        port=DB_PORT,
-        charset='utf8mb4',
-        cursorclass=pymysql.cursors.DictCursor
-    )
-    cursor = conn.cursor()
-
-    date_yesterday = (datetime.today() - timedelta(days=1)).strftime("%Y-%m-%d")
-    query = """
-        SELECT company_name, btc, date 
-        FROM bitcoin_holdings 
-        WHERE date = %s;
-    """
-    cursor.execute(query, (date_yesterday,))
-
-    data = cursor.fetchall()
-    conn.close()
-
-    return data
-
-def calculate_daily_change(new_data, old_data, date_today, date_yesterday):
-    """Compare today's BTC holdings with exactly yesterday's BTC holdings."""
-    changes = []
-
-    # Create a dictionary for easy lookup (company_name -> BTC on yesterday's date)
-    yesterday_btc_dict = {}
-    for item in old_data:
-        company = item["company_name"]
-        yesterday_btc_dict[company] = float(item["btc"])  # Store BTC from yesterday
-
-    for new in new_data:
-        company_name = new["company_name"]
-        new_btc = float(new["btc"])  # Today's BTC
-
-        # Get yesterday's BTC value if available
-        old_btc = yesterday_btc_dict.get(company_name, None)
-
-        if old_btc is not None:
-            change = new_btc - old_btc
-        else:
-            change = "Not Available"  # No BTC data for yesterday
-
-        changes.append({
-            "company_name": company_name,
-            "btc_today": new_btc,
-            "btc_yesterday": old_btc if old_btc is not None else "Not Available",
-            "daily_change": change
-        })
-
-    return changes
-
-def calculate_monthly_change(new_data, old_data):
-    """Calculate 30-day BTC quantity change."""
-    changes = []
-    for new in new_data:
-        total_change = 0
-        for i in range(1, 31):
-            period_ago_date = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
-            old_entry = next((item for item in old_data if item["company_name"] == new["company_name"] and item["date"] == period_ago_date), None)
-            if old_entry:
-                # Convert `old_entry["btc"]` to float for arithmetic operations
-                total_change += new["btc"] - float(old_entry["btc"])
-        changes.append({
-            "company_name": new["company_name"],
-            "monthly_change": total_change if total_change != 0 else "Shown after 1 month"
-        })
-    return changes
-
-def generate_changes_table(new_data, daily_changes=None, monthly_changes=None):
-    """Generate formatted table string (based on BTC quantity)."""
-    if not new_data:
+    """Load data from MySQL database."""
+    connection = connect_to_database()
+    if not connection:
         return None
 
-    header_format = "{:<20}  {:<15}  {:<15}  {:<15}"
-    row_format = "{:<20}  {:<15}  {:<15}  {:<15}"
+    try:
+        with connection.cursor() as cursor:
+            # Get all data ordered by date
+            cursor.execute("""
+                SELECT *
+                FROM btc_holdings
+                ORDER BY date DESC
+            """)
+            return cursor.fetchall()
+    except Exception as e:
+        print(f"Error loading data: {e}")
+        return None
+    finally:
+        connection.close()
 
-    table = header_format.format("Company", "BTC Held", "Yesterday", "Last Month") + "\n"
-    table += "-" * 76 + "\n"
-    for new in new_data:
-        daily_change = next((c["daily_change"] for c in (daily_changes or []) if c["company_name"] == new["company_name"]), None)
-        monthly_change = next((c["monthly_change"] for c in (monthly_changes or []) if c["company_name"] == new["company_name"]), None)
+def generate_table():
+    """Generate a report table from MySQL data."""
+    all_data = load_data_from_mysql()
+    if not all_data:
+        print("No historical data available.")
+        return "No historical data available."
 
-        today = datetime.now()
-        weekday = today.strftime("%A")
+    # Get the two most recent dates
+    dates = sorted(set(entry["date"].strftime("%Y-%m-%d") for entry in all_data), reverse=True)
+    if not dates:
+        return "No data found."
+    
+    latest_date = dates[0]
+    previous_date = dates[1] if len(dates) > 1 else None
 
-        if daily_change is None:
-            if weekday in ["Saturday", "Sunday"]:
-                daily_change_str = "No Data (Weekend)"
+    # Get the data for each date
+    latest_data = next((entry for entry in all_data if entry["date"].strftime("%Y-%m-%d") == latest_date), None)
+    previous_data = next((entry for entry in all_data if entry["date"].strftime("%Y-%m-%d") == previous_date), None)
+
+    if not latest_data:
+        return "No current data found."
+
+    # Define categories
+    categories = {
+        "🌍 *ETFs/ETPs*": ["BlackRock", "Fidelity", "Grayscale", "ARK_Invest", "Bitwise"],
+        "💱 *CEXs*": ["Binance", "Coinbase", "Bitfinex", "Kraken", "Robinhood"],
+        "🏢 *Public Companies*": ["MicroStrategy", "WorldLiberty", "USGovernment"]
+    }
+
+    # Initialize output
+    table_output = ""
+    total_all_btc = 0
+
+    # Generate table for each category
+    for i, (category_name, category_entities) in enumerate(categories.items()):
+        # Calculate category total
+        category_total = sum(float(latest_data[entity] or 0) for entity in category_entities)
+        total_all_btc += category_total
+
+        # Sort entities in this category by current holdings
+        sorted_entities = sorted(
+            [(entity, float(latest_data[entity] or 0)) for entity in category_entities],
+            key=lambda x: x[1],
+            reverse=True
+        )
+
+        # Generate category table
+        table_output += f"{category_name}\n"
+        header = "{:<15} {:<12} {:<12}".format("Entity", "Today", "Yesterday")
+        table_output += "```\n" + header + "\n" + "-" * 39 + "\n"
+
+        for entity, today in sorted_entities:
+            if today is None:
+                continue
+
+            # Get yesterday's value
+            yesterday = float(previous_data[entity]) if previous_data and previous_data[entity] else None
+
+            # Format current value
+            today_formatted = f"{today:,.0f}"
+
+            # Calculate and format change
+            if yesterday is not None:
+                change = today - yesterday
+                if change > 0:
+                    yesterday_formatted = f"+{abs(change):,.0f}"
+                elif change < 0:
+                    yesterday_formatted = f"-{abs(change):,.0f}"
+                else:
+                    yesterday_formatted = "0"
             else:
-                daily_change_str = "No Previous Data"
-        else:
-            daily_change_str = f"{daily_change:.2f}" if isinstance(daily_change, float) else daily_change
+                yesterday_formatted = "No Data"
 
-        monthly_change_str = f"{monthly_change:.2f}" if isinstance(monthly_change, float) else "Shown after 1 month"
+            table_output += "{:<15} {:<12} {:<12}\n".format(
+                entity.replace('_', ' '), today_formatted, yesterday_formatted
+            )
 
-        latest_btc_str = f"{new['btc']}"
-        table += row_format.format(new["company_name"], latest_btc_str, daily_change_str, monthly_change_str) + "\n"
+        table_output += "```"
+        # Add extra newlines only if it's not the last table
+        if i < len(categories) - 1:
+            table_output += "\n"
+    
+    return table_output
 
-    return table
+def check_entity_data_exists(entity, date):
+    """Check if data exists for entity on given date."""
+    connection = connect_to_database()
+    if not connection:
+        return False
+
+    try:
+        with connection.cursor() as cursor:
+            column_name = entity.replace(' ', '_')
+            cursor.execute(f"""
+                SELECT `{column_name}`
+                FROM btc_holdings
+                WHERE date = %s AND `{column_name}` IS NOT NULL
+            """, (date,))
+            result = cursor.fetchone()
+            return result is not None
+    except Exception as e:
+        print(f"Error checking data existence: {e}")
+        return False
+    finally:
+        connection.close()
 
 def get_chain():
+    """Main function to fetch and process BTC holdings data."""
+    print("\n=== Starting BTC Holdings Data Collection ===")
+    
     initialize_database()
-    html_content = fetch_data_with_requests()
-    if not html_content:
-        print("Unable to fetch HTML content from website")
-        return None
+    print("Database initialized")
 
-    new_data = extract_specific_data(html_content)
-    if not new_data:
-        print("Required table structure not found in HTML content") 
-        return None
+    # Start Docker container
+    client = docker.from_env()
+    container_name = "selenium-firefox"
+    image_name = "selenium/standalone-firefox"
+    today = datetime.now().date()
+    
+    try:
+        # Clean up any existing container
+        try:
+            container = client.containers.get(container_name)
+            container.stop()
+            container.remove()
+        except docker.errors.NotFound:
+            pass
 
-    old_data = load_data_from_mysql()
-    save_data_to_mysql(new_data)
-
-    date_today = datetime.today().strftime("%Y-%m-%d")
-    date_yesterday = (datetime.today() - timedelta(days=1)).strftime("%Y-%m-%d")
-
-    daily_changes = calculate_daily_change(new_data, old_data, date_today, date_yesterday) if old_data else []
-    monthly_changes = calculate_monthly_change(new_data, old_data) if old_data else []
-
-    table = generate_changes_table(new_data, daily_changes, monthly_changes)
-    if table:
-        msg = f"📖 *Bitcoin Public Company*\n"
-        msg += "```\n"
-        msg += table
-        msg += "```"
+        # Start new container
+        print(f"Starting new {container_name} container...")
+        client.containers.run(
+            image_name,
+            name=container_name,
+            ports={"4444/tcp": 4444},
+            detach=True,
+        )
+        time.sleep(5)  # Wait for container to be ready
+        
+        # Process each entity
+        for entity, url in URLS.items():
+            # Check if we already have data for this entity today
+            if check_entity_data_exists(entity, today):
+                print(f"\nSkipping {entity} - data already exists for today")
+                continue
+                
+            print(f"\nProcessing {entity}...")
+            html_content = fetch_data_with_firefox(url)
+            if html_content:
+                btc_amount = extract_btc_holdings(html_content)
+                if btc_amount is not None:
+                    save_data_to_mysql(entity, btc_amount)
+                time.sleep(random.uniform(2, 5))  # Random delay between requests
+        
+        # Generate final report
+        msg = generate_table()
+        print("\nReport generated successfully")
         return msg
 
+    except Exception as e:
+        print(f"Error in main process: {e}")
+        return None
+    finally:
+        # Cleanup
+        try:
+            container = client.containers.get(container_name)
+            print(f"\nStopping and removing {container_name} container")
+            container.stop()
+            container.remove()
+        except:
+            pass
+
 if __name__ == "__main__":
-    # For testing purposes
-    print(get_chain())
+    result = get_chain()
+    if result:
+        print("\n=== Final Output ===")
+        print(result)
+    else:
+        print("\n=== Script completed with errors ===")
