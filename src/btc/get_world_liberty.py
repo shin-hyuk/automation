@@ -463,9 +463,9 @@ def generate_table(html_content=None):
     crypto_values.sort(key=lambda x: x[1], reverse=True)
     
     # Generate table
-    table_output = f"World Liberty Fi (Total Portfolio Value: ${total_value:,.2f})\n"
+    table_output = f"🦅 *World Liberty Fi* (Total Portfolio Value: ${total_value:,.2f})\n"
     header = "{:<10} {:<12} {:<12}".format("Asset", "Today", "Yesterday")
-    table_output += "```\n" + header + "\n" + "-" * 45 + "\n"
+    table_output += "```\n" + header + "\n" + "-" * 34 + "\n"
 
     # Use sorted crypto list
     for crypto, _ in crypto_values:
