@@ -463,8 +463,8 @@ def generate_table(html_content=None):
     
     # Generate table
     table_output = f"🦅 *World Liberty Fi* (Total Portfolio Value: ${total_value:,.2f})\n"
-    header = "{:<10} {:<12} {:<12}".format("Asset", "Today", "Yesterday")
-    table_output += "```\n" + header + "\n" + "-" * 34 + "\n"
+    header = "{:<15} {:<12} {:<12}".format("Asset", "Today", "Yesterday")
+    table_output += "```\n" + header + "\n" + "-" * 39 + "\n"
 
     # Use sorted crypto list
     for crypto, _ in crypto_values:
@@ -490,7 +490,7 @@ def generate_table(html_content=None):
         else:
             previous_formatted = "No Data"
 
-        table_output += "{:<10} {:<12} {:<12}\n".format(
+        table_output += "{:<15} {:<12} {:<12}\n".format(
             crypto, current_formatted, previous_formatted
         )
 
@@ -641,45 +641,12 @@ def get_insight(df):
     
     return "\n".join(f"*{i+1})* {insight}" for i, insight in enumerate(insights)), list(display_assets)
 
-def check_data_exists(date):
-    """Check if data exists for given date."""
-    connection = connect_to_database()
-    if not connection:
-        return False
-
-    try:
-        with connection.cursor() as cursor:
-            cursor.execute("""
-                SELECT date 
-                FROM portfolio_holdings
-                WHERE date = %s
-            """, (date,))
-            result = cursor.fetchone()
-            return result is not None
-    except Exception as e:
-        print(f"Error checking data existence: {e}")
-        return False
-    finally:
-        connection.close()
-
+# **📌 Main Execution**
 def get_world_liberty():
     """Main function to fetch and process World Liberty data."""
     print("\n=== Starting World Liberty Data Collection ===")
     
-    today = datetime.now().date()
-    
-    # Check if we already have data for today
-    if check_data_exists(today):
-        print("Data already exists for today, skipping fetch")
-        try:
-            msg = generate_table()
-            print("Message generated successfully")
-            return msg
-        except Exception as e:
-            print(f"Error generating table message: {str(e)}")
-            return None
-    
-    # If no data exists, proceed with fetching
+    # Fetch data first
     html_content = fetch_data_with_firefox()
     if not html_content:
         print("Unable to fetch data from website")
@@ -700,7 +667,7 @@ def get_world_liberty():
     print("Data saving process completed")
     
     try:
-        msg = generate_table()
+        msg = generate_table(html_content)
         print("Message generated successfully")
         return msg
     except Exception as e:

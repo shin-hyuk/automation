@@ -244,6 +244,9 @@ def generate_table():
         print("No historical data available.")
         return "No historical data available."
 
+    # Convert to DataFrame for insights
+    df = pd.DataFrame(all_data)
+
     # Get the two most recent dates
     dates = sorted(set(entry["date"].strftime("%Y-%m-%d") for entry in all_data), reverse=True)
     if not dates:
@@ -268,14 +271,12 @@ def generate_table():
 
     # Initialize output
     table_output = ""
-    total_all_btc = 0
 
     # Generate table for each category
     for i, (category_name, category_entities) in enumerate(categories.items()):
-        # Calculate category total
-        category_total = sum(float(latest_data[entity] or 0) for entity in category_entities)
-        total_all_btc += category_total
-
+        # Get insights for this category
+        insights, _ = get_category_insight(df, category_entities)
+        
         # Sort entities in this category by current holdings
         sorted_entities = sorted(
             [(entity, float(latest_data[entity] or 0)) for entity in category_entities],
@@ -315,8 +316,17 @@ def generate_table():
             )
 
         table_output += "```"
+        
+        # Add insights or default message
+        if insights.strip() == "":
+            table_output += "No notable changes detected in asset holdings and trading patterns."
+        else:
+            table_output += insights
+        
         # Add extra newlines only if it's not the last table
         if i < len(categories) - 1:
+            table_output += "\n\n"
+        else:
             table_output += "\n"
     
     return table_output
@@ -342,6 +352,146 @@ def check_entity_data_exists(entity, date):
         return False
     finally:
         connection.close()
+
+def get_streaks(df, category_entities):
+    """Find the longest buying/selling streaks."""
+    streaks = {}
+    for entity in category_entities:
+        if entity not in df.columns:
+            continue
+            
+        changes = df[entity].diff()
+        direction = None
+        streak_count = 0
+        
+        for change in changes.iloc[:-1].iloc[::-1]:  # Reverse order, excluding today
+            if change > 0:
+                if direction == "buying" or direction is None:
+                    direction = "buying"
+                    streak_count += 1
+                else:
+                    break
+            elif change < 0:
+                if direction == "selling" or direction is None:
+                    direction = "selling"
+                    streak_count += 1
+                else:
+                    break
+            else:
+                break
+                
+        if streak_count > 1:  # Only record if streak is longer than 1 day
+            streaks[entity] = (direction, streak_count)
+    
+    if not streaks:
+        return [], []
+        
+    # Find max streak
+    max_streak = max(streaks.values(), key=lambda x: x[1])
+    max_streak_assets = [asset for asset, (dir, count) in streaks.items() 
+                        if count == max_streak[1] and dir == max_streak[0]]
+    
+    messages = [f"Holdings of {', '.join(max_streak_assets)} have been {max_streak[0]} for *{max_streak[1]} days straight*"]
+    return max_streak_assets, messages
+
+def get_reversal(df, category_entities):
+    """Find buying to selling and selling to buying reversals."""
+    if len(df) < 3:  # Need at least 3 days of data
+        return [], []
+        
+    assets = []
+    messages = []
+    
+    for entity in category_entities:
+        if entity not in df.columns:
+            continue
+            
+        changes = df[entity].diff()
+        yesterday_change = changes.iloc[-2]
+        day_before_change = changes.iloc[-3]
+        
+        if yesterday_change * day_before_change < 0:  # Sign changed
+            today_value = df[entity].iloc[-1]
+            yesterday_value = df[entity].iloc[-2]
+            
+            if yesterday_value != 0:
+                pct_change = ((today_value - yesterday_value) / yesterday_value) * 100
+                direction = "buying" if yesterday_change > 0 else "selling"
+                opposite = "selling" if yesterday_change > 0 else "buying"
+                
+                assets.append(entity)
+                messages.append(
+                    f"Position in {entity} shifted to {direction} after {opposite} (*{pct_change:+.2f}%*)"
+                )
+    
+    return assets, messages
+
+def get_max_changes(df, category_entities):
+    """Find maximum percentage increases and decreases."""
+    if len(df) < 2:  # Need at least 2 days of data
+        return [], []
+        
+    assets = []
+    messages = []
+    max_increase = (None, -float('inf'))
+    max_decrease = (None, float('inf'))
+    
+    for entity in category_entities:
+        if entity not in df.columns:
+            continue
+            
+        today_value = df[entity].iloc[-1]
+        yesterday_value = df[entity].iloc[-2]
+        
+        if yesterday_value == 0:
+            continue
+            
+        pct_change = ((today_value - yesterday_value) / yesterday_value) * 100
+        
+        if pct_change > max_increase[1]:
+            max_increase = (entity, pct_change)
+        if pct_change < max_decrease[1]:
+            max_decrease = (entity, pct_change)
+    
+    if max_increase[0] and max_increase[1] > 0:
+        assets.append(max_increase[0])
+        messages.append(
+            f"Holdings of {max_increase[0]} saw largest increase (*{max_increase[1]:+.2f}%*)"
+        )
+        
+    if max_decrease[0] and max_decrease[1] < 0:
+        assets.append(max_decrease[0])
+        messages.append(
+            f"Holdings of {max_decrease[0]} saw largest decrease (*{max_decrease[1]:+.2f}%*)"
+        )
+    
+    return assets, messages
+
+def get_category_insight(df, category_entities):
+    """Generate insights for a specific category."""
+    insights = []
+    display_assets = set()
+    
+    # Get all insights for this category
+    streak_assets, streak_msgs = get_streaks(df, category_entities)
+    reversal_assets, reversal_msgs = get_reversal(df, category_entities)
+    change_assets, change_msgs = get_max_changes(df, category_entities)
+    
+    # Add all messages in order
+    insights.extend(streak_msgs)
+    insights.extend(reversal_msgs)
+    insights.extend(change_msgs)
+    
+    # Collect unique assets for display
+    display_assets.update(streak_assets)
+    display_assets.update(reversal_assets)
+    display_assets.update(change_assets)
+    
+    # Format insights
+    if not insights:
+        return "", list(display_assets)
+    
+    return "\n" + "\n".join(f"*{i+1})* {insight}" for i, insight in enumerate(insights)), list(display_assets)
 
 def get_chain():
     """Main function to fetch and process BTC holdings data."""

@@ -17,9 +17,9 @@ async def send_daily():
 
     try:
         # Send first daily message
-        msg = get_daily1()
-        await send_message(msg, chat_ids=TRADE_CHAT_IDS)
-        print("Daily message 1 sent successfully")
+        #msg = get_daily1()
+        #await send_message(msg, chat_ids=TRADE_CHAT_IDS)
+        #print("Daily message 1 sent successfully")
 
         # Send second daily message
         msg = get_daily2()
