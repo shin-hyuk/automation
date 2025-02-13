@@ -237,7 +237,7 @@ def extract_holdings_and_value(html_content):
                 if amount < 0:
                     print(f"Negative amount for {symbol}: {amount}")
                     continue
-                
+
                 holdings_data[symbol] = amount
                 processed_symbols.add(symbol)
 
@@ -494,7 +494,7 @@ def generate_table(html_content=None):
             crypto, current_formatted, previous_formatted
         )
 
-    table_output += "```\n\n"
+    table_output += "```"
     
     # Add insights below table
     table_output += insights
