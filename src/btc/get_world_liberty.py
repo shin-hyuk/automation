@@ -237,8 +237,7 @@ def extract_holdings_and_value(html_content):
                 if amount < 0:
                     print(f"Negative amount for {symbol}: {amount}")
                     continue
-
-                print(f"Processed {symbol}: {amount_text} -> {amount}")
+                
                 holdings_data[symbol] = amount
                 processed_symbols.add(symbol)
 
