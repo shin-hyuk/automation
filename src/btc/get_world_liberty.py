@@ -331,19 +331,19 @@ def load_data_from_mysql():
 
 # **📌 Calculate Changes**
 def format_number(value):
-    """Format numbers to show B (billion), M (million), K (thousand) if applicable."""
-    try:
-        value = float(value)
-        if value >= 1_000_000_000:  # Billions
-            return f"{value / 1_000_000_000:.3f}B"
-        elif value >= 1_000_000:  # Millions
-            return f"{value / 1_000_000:.3f}M"
-        elif value >= 1_000:  # Thousands
-            return f"{value / 1_000:.3f}K"
-        else:
-            return f"{value:.3f}"
-    except (ValueError, TypeError):
-        return str(value)
+    """Format number to show minimal necessary decimals."""
+    value = float(value)
+    if value == 0:
+        return "0"
+    
+    # Convert to string with max precision
+    str_value = f"{value:.8f}".rstrip('0').rstrip('.')
+    
+    # If it's a whole number, format with commas
+    if '.' not in str_value:
+        return f"{int(value):,}"
+    
+    return f"{float(str_value):,}"
 
 def convert_to_float(value):
     """Convert string values with 'K', 'M', or 'B' into float numbers."""
@@ -401,8 +401,10 @@ def generate_table(html_content=None):
         print("No historical data available.")
         return "No historical data available."
 
-    # Convert data to DataFrame for insights
+    # Convert data to DataFrame for insights and sort by date (oldest first)
     df = pd.DataFrame(all_data)
+    df['date'] = pd.to_datetime(df['date'])  # Ensure date is datetime
+    df = df.sort_values('date', ascending=True)  # Explicitly sort oldest to newest
     
     # Get insights data and display assets
     insights, display_assets = get_insight(df)
@@ -411,6 +413,7 @@ def generate_table(html_content=None):
     dates = sorted(set(entry["date"].strftime("%Y-%m-%d") for entry in all_data), reverse=True)
     if not dates:
         return "No data found."
+    
     
     latest_date = dates[0]
     previous_date = dates[1] if len(dates) > 1 else None
@@ -463,35 +466,40 @@ def generate_table(html_content=None):
     
     # Generate table
     table_output = f"🦅 *World Liberty Fi* (Total Portfolio Value: ${total_value:,.2f})\n"
-    header = "{:<15} {:<12} {:<12}".format("Asset", "Today", "Yesterday")
-    table_output += "```\n" + header + "\n" + "-" * 39 + "\n"
+    header = "{:<15} {:<12} {:<12} {:<12}".format("Asset", "Today", "Yesterday", "")  # Empty header for percentage
+    table_output += "```\n" + header + "\n" + "-" * 51 + "\n"  # Extended line for new column
 
     # Use sorted crypto list
-    for crypto, _ in crypto_values:
-        current_value = latest_data[crypto]
-        if not current_value:
-            continue
-
-        previous_value = previous_data[crypto] if previous_data else None
+    for crypto, today in crypto_values:
+        # Convert today's value to float
+        today = float(today)
+        
+        # Get yesterday's value and convert to float if exists
+        yesterday = float(previous_data[crypto]) if previous_data and previous_data[crypto] is not None else None
 
         # Format current value
-        current_formatted = format_number(current_value)
+        today_formatted = format_number(today)
 
-        # Calculate and format change with +/- sign
-        if previous_value:
-            change = current_value - previous_value
-            change_formatted = format_number(abs(change))
+        # Calculate and format change and percentage
+        if yesterday is not None:  # Check for None specifically
+            change = today - yesterday
             if change > 0:
-                previous_formatted = f"+{change_formatted}"
+                yesterday_formatted = f"+{format_number(abs(change))}"
+                pct_change = ((today - yesterday) / yesterday) * 100
+                pct_formatted = f"({pct_change:+.1f}%)"
             elif change < 0:
-                previous_formatted = f"-{change_formatted}"
+                yesterday_formatted = f"-{format_number(abs(change))}"
+                pct_change = ((today - yesterday) / yesterday) * 100
+                pct_formatted = f"({pct_change:+.1f}%)"
             else:
-                previous_formatted = "0"
+                yesterday_formatted = "0"
+                pct_formatted = "(=)"  # Show equals sign for no change
         else:
-            previous_formatted = "No Data"
+            yesterday_formatted = "No Data"
+            pct_formatted = ""
 
-        table_output += "{:<15} {:<12} {:<12}\n".format(
-            crypto, current_formatted, previous_formatted
+        table_output += "{:<15} {:<12} {:<12} {:<12}\n".format(
+            crypto, today_formatted, yesterday_formatted, pct_formatted
         )
 
     table_output += "```"
@@ -501,18 +509,24 @@ def generate_table(html_content=None):
 
     return table_output
 
-def get_streaks(df):
+def get_streaks(df, columns):
     """Find the longest buying/selling streaks."""
     streaks = {}
-    for column in df.columns:
-        if column in ['id', 'date', 'total_value']:
+    for column in columns:
+        if column not in df.columns:
             continue
             
-        changes = df[column].diff()
+        # Convert column to float type before diff
+        df[column] = df[column].astype(float)
+        changes = df[column].diff().iloc[1:]  # Skip first NaN from diff()
+        
         direction = None
         streak_count = 0
-        
-        for change in changes.iloc[:-1].iloc[::-1]:  # Reverse order, excluding today
+        # Look at most recent changes first (last values in changes)
+        for change in changes.tail(30):  # Look at last 30 days max
+            if pd.isna(change):  # Skip NaN values
+                continue
+                
             if change > 0:
                 if direction == "buying" or direction is None:
                     direction = "buying"
@@ -533,48 +547,64 @@ def get_streaks(df):
     
     if not streaks:
         return [], []
-        
-    # Find max streak
-    max_streak = max(streaks.values(), key=lambda x: x[1])
-    max_streak_assets = [asset for asset, (dir, count) in streaks.items() 
-                        if count == max_streak[1] and dir == max_streak[0]]
     
-    messages = [f"Holdings of {', '.join(max_streak_assets)} have been {max_streak[0]} for *{max_streak[1]} days straight*"]
-    return max_streak_assets, messages
+    # Group assets by direction and streak count
+    max_streak = max(streak[1] for streak in streaks.values())
+    buying_assets = [asset for asset, (dir, count) in streaks.items() 
+                    if count == max_streak and dir == "buying"]
+    selling_assets = [asset for asset, (dir, count) in streaks.items() 
+                     if count == max_streak and dir == "selling"]
+    
+    # Create combined message
+    message_parts = []
+    if selling_assets:
+        message_parts.append(f"{', '.join(selling_assets)} selling")
+    if buying_assets:
+        message_parts.append(f"{', '.join(buying_assets)} buying")
+    
+    if message_parts:
+        messages = [f"Holdings of {' and '.join(message_parts)} for *{max_streak} days straight*"]
+        return buying_assets + selling_assets, messages
+    
+    return [], []
 
-def get_reversal(df):
+def get_reversal(df, columns):
     """Find buying to selling and selling to buying reversals."""
-    if len(df) < 3:  # Need at least 3 days of data
-        return [], []
-        
     assets = []
     messages = []
-    
-    for column in df.columns:
-        if column in ['id', 'date', 'total_value']:
+    for column in columns:
+        if column not in df.columns:
             continue
-            
-        changes = df[column].diff()
-        yesterday_change = changes.iloc[-2]
-        day_before_change = changes.iloc[-3]
+        changes = df[column].diff().iloc[1:]
+        today_change = changes.iloc[-1]
         
-        if yesterday_change * day_before_change < 0:  # Sign changed
-            today_value = df[column].iloc[-1]
-            yesterday_value = df[column].iloc[-2]
-            
-            if yesterday_value != 0:
-                pct_change = ((today_value - yesterday_value) / yesterday_value) * 100
-                direction = "buying" if yesterday_change > 0 else "selling"
-                opposite = "selling" if yesterday_change > 0 else "buying"
+        # Count the streak before the reversal
+        streak_count = 0
+        prev_direction = None
+        for change in changes.iloc[::-1]:
+            if change == 0:
+                break
+            if prev_direction is None:
+                prev_direction = "selling" if change < 0 else "buying"
+                streak_count = 1
+            elif (change < 0 and prev_direction == "selling") or (change > 0 and prev_direction == "buying"):
+                streak_count += 1
+            else:
+                break
+                
+        # Check if today reversed the streak
+        if streak_count >= 1:
+            if (today_change > 0 and prev_direction == "selling") or (today_change < 0 and prev_direction == "buying"):
+                direction = "buying" if today_change > 0 else "selling"
                 
                 assets.append(column)
                 messages.append(
-                    f"Position in {column} shifted to {direction} after {opposite} (*{pct_change:+.2f}%*)"
+                    f"Position in {column} shifted to {direction} after {prev_direction} streak of {streak_count} days"
                 )
     
     return assets, messages
 
-def get_max_changes(df):
+def get_max_changes(df, columns):
     """Find maximum percentage increases and decreases."""
     if len(df) < 2:  # Need at least 2 days of data
         return [], []
@@ -584,11 +614,11 @@ def get_max_changes(df):
     max_increase = (None, -float('inf'))
     max_decrease = (None, float('inf'))
     
-    for column in df.columns:
-        if column in ['id', 'date', 'total_value']:
+    for column in columns:
+        if column not in df.columns:
             continue
             
-        today_value = df[column].iloc[-1]
+        today_value = df[column].iloc[-1]  # Include today's value
         yesterday_value = df[column].iloc[-2]
         
         if yesterday_value == 0:
@@ -615,15 +645,21 @@ def get_max_changes(df):
     
     return assets, messages
 
-def get_insight(df):
+def get_insight(df, display_columns=None):
     """Generate insights from the data."""
     insights = []
     display_assets = set()
     
+    # Use all columns except 'date' and 'USDT' if no display_columns provided
+    if display_columns is None:
+        display_columns = [col for col in df.columns if col != 'date' and col != 'USDT']
+    else:
+        display_columns = [col for col in display_columns if col != 'USDT']
+    
     # Get all insights
-    streak_assets, streak_msgs = get_streaks(df)
-    reversal_assets, reversal_msgs = get_reversal(df)
-    change_assets, change_msgs = get_max_changes(df)
+    streak_assets, streak_msgs = get_streaks(df, display_columns)
+    reversal_assets, reversal_msgs = get_reversal(df, display_columns)
+    change_assets, change_msgs = get_max_changes(df, display_columns)
     
     # Add all messages in order
     insights.extend(streak_msgs)
@@ -639,7 +675,7 @@ def get_insight(df):
     if not insights:
         return "No notable changes detected in asset holdings and trading patterns.", list(display_assets)
     
-    return "\n".join(f"*{i+1})* {insight}" for i, insight in enumerate(insights)), list(display_assets)
+    return "\n".join(f"*{i+1})* {insight}" for i, insight in enumerate(insights)) + "\n", list(display_assets)
 
 # **📌 Main Execution**
 def get_world_liberty():
@@ -686,3 +722,14 @@ def get_world_liberty():
             print(f"Container {container_name} already removed")
         except Exception as e:
             print(f"Error cleaning up container: {e}")
+
+if __name__ == "__main__":
+    try:
+        msg = get_world_liberty()
+        if msg:
+            print("\nSuccessfully generated message:")
+            print(msg)
+        else:
+            print("\nFailed to generate message")
+    except Exception as e:
+        print(f"\nError in main process: {e}")

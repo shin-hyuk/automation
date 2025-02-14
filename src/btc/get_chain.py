@@ -237,6 +237,21 @@ def load_data_from_mysql():
     finally:
         connection.close()
 
+def format_number(value):
+    """Format number to show minimal necessary decimals."""
+    value = float(value)
+    if value == 0:
+        return "0"
+    
+    # Convert to string with max precision
+    str_value = f"{value:.8f}".rstrip('0').rstrip('.')
+    
+    # If it's a whole number, format with commas
+    if '.' not in str_value:
+        return f"{int(value):,}"
+    
+    return f"{float(str_value):,}"
+
 def generate_table():
     """Generate a report table from MySQL data."""
     all_data = load_data_from_mysql()
@@ -244,11 +259,13 @@ def generate_table():
         print("No historical data available.")
         return "No historical data available."
 
-    # Convert to DataFrame for insights
+    # Convert to DataFrame for insights and sort by date (oldest first)
     df = pd.DataFrame(all_data)
-
+    df['date'] = pd.to_datetime(df['date'])  # Ensure date is datetime
+    df = df.sort_values('date')  # Sort by date ascending
+    
     # Get the two most recent dates
-    dates = sorted(set(entry["date"].strftime("%Y-%m-%d") for entry in all_data), reverse=True)
+    dates = sorted(set(entry["date"] for entry in all_data), reverse=True)
     if not dates:
         return "No data found."
     
@@ -256,8 +273,8 @@ def generate_table():
     previous_date = dates[1] if len(dates) > 1 else None
 
     # Get the data for each date
-    latest_data = next((entry for entry in all_data if entry["date"].strftime("%Y-%m-%d") == latest_date), None)
-    previous_data = next((entry for entry in all_data if entry["date"].strftime("%Y-%m-%d") == previous_date), None)
+    latest_data = next((entry for entry in all_data if entry["date"] == latest_date), None)
+    previous_data = next((entry for entry in all_data if entry["date"] == previous_date), None)
 
     if not latest_data:
         return "No current data found."
@@ -286,48 +303,61 @@ def generate_table():
 
         # Generate category table
         table_output += f"{category_name}\n"
-        header = "{:<15} {:<12} {:<12}".format("Entity", "Today", "Yesterday")
-        table_output += "```\n" + header + "\n" + "-" * 39 + "\n"
+        header = "{:<15} {:<12} {:<12} {:<12}".format("Entity", "Today", "Yesterday", "")
+        table_output += "```\n" + header + "\n" + "-" * 51 + "\n"
 
         for entity, today in sorted_entities:
             if today is None:
                 continue
 
             # Get yesterday's value
-            yesterday = float(previous_data[entity]) if previous_data and previous_data[entity] else None
+            yesterday = float(previous_data[entity]) if previous_data and previous_data[entity] is not None else None
 
             # Format current value
-            today_formatted = f"{today:,.0f}"
+            today_formatted = format_number(today)
 
-            # Calculate and format change
-            if yesterday is not None:
+            # Calculate and format change and percentage
+            if yesterday is not None:  # Check for None specifically
                 change = today - yesterday
                 if change > 0:
-                    yesterday_formatted = f"+{abs(change):,.0f}"
+                    yesterday_formatted = f"+{format_number(abs(change))}"
+                    pct_change = ((today - yesterday) / yesterday) * 100
+                    pct_formatted = f"({pct_change:+.1f}%)"
                 elif change < 0:
-                    yesterday_formatted = f"-{abs(change):,.0f}"
+                    yesterday_formatted = f"-{format_number(abs(change))}"
+                    pct_change = ((today - yesterday) / yesterday) * 100
+                    pct_formatted = f"({pct_change:+.1f}%)"
                 else:
                     yesterday_formatted = "0"
+                    pct_formatted = "(=)"  # Show equals sign for no change
             else:
                 yesterday_formatted = "No Data"
+                pct_formatted = ""
 
-            table_output += "{:<15} {:<12} {:<12}\n".format(
-                entity.replace('_', ' '), today_formatted, yesterday_formatted
+            table_output += "{:<15} {:<12} {:<12} {:<12}\n".format(
+                entity.replace('_', ' '), today_formatted, yesterday_formatted, pct_formatted
             )
 
         table_output += "```"
         
         # Add insights or default message
         if insights.strip() == "":
-            table_output += "No notable changes detected in asset holdings and trading patterns."
+            table_output += "No notable changes detected in asset holdings and trading patterns.\n"
         else:
             table_output += insights
         
         # Add extra newlines only if it's not the last table
         if i < len(categories) - 1:
-            table_output += "\n\n"
-        else:
             table_output += "\n"
+        else:
+            table_output += ""
+    
+    # Add debug prints
+    print("\n=== Debug: Generated Message ===")
+    print("Message length:", len(table_output))
+    print("Message content:")
+    print(table_output)
+    print("=== End Debug ===\n")
     
     return table_output
 
@@ -359,12 +389,10 @@ def get_streaks(df, category_entities):
     for entity in category_entities:
         if entity not in df.columns:
             continue
-            
-        changes = df[entity].diff()
+        changes = df[entity].diff().iloc[1:]
         direction = None
         streak_count = 0
-        
-        for change in changes.iloc[:-1].iloc[::-1]:  # Reverse order, excluding today
+        for change in changes.iloc[::-1]:  # Reverse order, excluding today
             if change > 0:
                 if direction == "buying" or direction is None:
                     direction = "buying"
@@ -382,7 +410,7 @@ def get_streaks(df, category_entities):
                 
         if streak_count > 1:  # Only record if streak is longer than 1 day
             streaks[entity] = (direction, streak_count)
-    
+
     if not streaks:
         return [], []
         
@@ -396,41 +424,42 @@ def get_streaks(df, category_entities):
 
 def get_reversal(df, category_entities):
     """Find buying to selling and selling to buying reversals."""
-    if len(df) < 3:  # Need at least 3 days of data
-        return [], []
-        
     assets = []
     messages = []
-    
     for entity in category_entities:
         if entity not in df.columns:
             continue
-            
-        changes = df[entity].diff()
-        yesterday_change = changes.iloc[-2]
-        day_before_change = changes.iloc[-3]
+        changes = df[entity].diff().iloc[1:]
+        today_change = changes.iloc[-1]
         
-        if yesterday_change * day_before_change < 0:  # Sign changed
-            today_value = df[entity].iloc[-1]
-            yesterday_value = df[entity].iloc[-2]
-            
-            if yesterday_value != 0:
-                pct_change = ((today_value - yesterday_value) / yesterday_value) * 100
-                direction = "buying" if yesterday_change > 0 else "selling"
-                opposite = "selling" if yesterday_change > 0 else "buying"
+        # Count the streak before the reversal
+        streak_count = 0
+        prev_direction = None
+        for change in changes.iloc[::-1]:
+            if change == 0:
+                break
+            if prev_direction is None:
+                prev_direction = "selling" if change < 0 else "buying"
+                streak_count = 1
+            elif (change < 0 and prev_direction == "selling") or (change > 0 and prev_direction == "buying"):
+                streak_count += 1
+            else:
+                break
+                
+        # Check if today reversed the streak
+        if streak_count >= 1:
+            if (today_change > 0 and prev_direction == "selling") or (today_change < 0 and prev_direction == "buying"):
+                direction = "buying" if today_change > 0 else "selling"
                 
                 assets.append(entity)
                 messages.append(
-                    f"Position in {entity} shifted to {direction} after {opposite} (*{pct_change:+.2f}%*)"
+                    f"Position in {entity} shifted to {direction} after {prev_direction} streak of {streak_count} days"
                 )
     
     return assets, messages
 
 def get_max_changes(df, category_entities):
     """Find maximum percentage increases and decreases."""
-    if len(df) < 2:  # Need at least 2 days of data
-        return [], []
-        
     assets = []
     messages = []
     max_increase = (None, -float('inf'))
@@ -440,7 +469,7 @@ def get_max_changes(df, category_entities):
         if entity not in df.columns:
             continue
             
-        today_value = df[entity].iloc[-1]
+        today_value = df[entity].iloc[-1]  # Include today's value
         yesterday_value = df[entity].iloc[-2]
         
         if yesterday_value == 0:
@@ -456,13 +485,13 @@ def get_max_changes(df, category_entities):
     if max_increase[0] and max_increase[1] > 0:
         assets.append(max_increase[0])
         messages.append(
-            f"Holdings of {max_increase[0]} saw largest increase (*{max_increase[1]:+.2f}%*)"
+            f"Holdings of {max_increase[0].replace('_', ' ')} saw largest increase (*{max_increase[1]:+.2f}%*)"
         )
         
     if max_decrease[0] and max_decrease[1] < 0:
         assets.append(max_decrease[0])
         messages.append(
-            f"Holdings of {max_decrease[0]} saw largest decrease (*{max_decrease[1]:+.2f}%*)"
+            f"Holdings of {max_decrease[0].replace('_', ' ')} saw largest decrease (*{max_decrease[1]:+.2f}%*)"
         )
     
     return assets, messages
@@ -491,7 +520,7 @@ def get_category_insight(df, category_entities):
     if not insights:
         return "", list(display_assets)
     
-    return "\n" + "\n".join(f"*{i+1})* {insight}" for i, insight in enumerate(insights)), list(display_assets)
+    return "\n".join(f"*{i+1})* {insight}" for i, insight in enumerate(insights)) + "\n", list(display_assets)
 
 def get_chain():
     """Main function to fetch and process BTC holdings data."""
@@ -543,6 +572,7 @@ def get_chain():
         # Generate final report
         msg = generate_table()
         print("\nReport generated successfully")
+        print(msg)
         return msg
 
     except Exception as e:

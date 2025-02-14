@@ -120,7 +120,6 @@ def get_reversal(df):
 def get_streaks(df):
     msg = ""
     df = df.diff().iloc[1:]
-
     streaks = {}
     for category in NEW_RANGES.keys():
         category_data = df[category]
