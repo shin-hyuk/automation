@@ -25,9 +25,27 @@ DB_PASSWORD = os.getenv('DB_PASSWORD')
 DB_NAME = os.getenv('DB_NAME')
 DB_PORT = int(os.getenv('DB_PORT', 3306))
 
-# **Target URL**
-URL = "https://intel.arkm.com/explorer/entity/worldlibertyfi"
-
+# Entity configurations
+ENTITIES = {
+    "worldliberty": {
+        "url": "https://intel.arkm.com/explorer/entity/worldlibertyfi",
+        "table": "worldliberty_holdings",
+        "emoji": "🦅",
+        "title": "World Liberty Fi"
+    },
+    "blackrock": {
+        "url": "https://intel.arkm.com/explorer/entity/blackrock",
+        "table": "blackrock_holdings",
+        "emoji": "🏛️",
+        "title": "BlackRock"
+    },
+    "usg": {
+        "url": "https://intel.arkm.com/explorer/entity/usg",
+        "table": "usg_holdings",
+        "emoji": "🏦",
+        "title": "US Government"
+    }
+}
 
 # **Rotating User Agents**
 USER_AGENTS = [
@@ -55,7 +73,7 @@ def connect_to_database():
         return None
 
 # **📌 Initialize Database**
-def initialize_database(html_content=None):
+def initialize_database(entity_config, html_content=None):
     """Initialize database with dynamic columns for all cryptocurrencies."""
     connection = connect_to_database()
     if not connection:
@@ -64,15 +82,15 @@ def initialize_database(html_content=None):
     try:
         with connection.cursor() as cursor:
             # Create table if it doesn't exist
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS portfolio_holdings (
+            cursor.execute(f"""
+                CREATE TABLE IF NOT EXISTS {entity_config['table']} (
                     id INT AUTO_INCREMENT PRIMARY KEY,
                     date DATE NOT NULL UNIQUE,
                     total_value DECIMAL(20,4)
                 )
             """)
             connection.commit()
-            print("Base table portfolio_holdings is ready")
+            print(f"Base table {entity_config['table']} is ready")
             
             # Get all possible cryptocurrencies from the webpage
             if not html_content:
@@ -89,7 +107,7 @@ def initialize_database(html_content=None):
                     crypto_columns.add(symbol)
             
             # Get existing columns
-            cursor.execute("SHOW COLUMNS FROM portfolio_holdings")
+            cursor.execute(f"SHOW COLUMNS FROM {entity_config['table']}")
             existing_columns = {row['Field'] for row in cursor.fetchall()}
             
             # Add any new cryptocurrencies as columns
@@ -98,14 +116,14 @@ def initialize_database(html_content=None):
                     print(f"Adding new column for {symbol}")
                     try:
                         cursor.execute(f"""
-                            ALTER TABLE portfolio_holdings
+                            ALTER TABLE {entity_config['table']}
                             ADD COLUMN `{symbol}` DECIMAL(20,4)
                         """)
                         connection.commit()
                     except Exception as e:
                         print(f"Error adding column {symbol}: {e}")
             
-            print("Table portfolio_holdings is ready with all crypto columns")
+            print(f"Table {entity_config['table']} is ready with all crypto columns")
             
     except Exception as e:
         print(f"Error initializing database: {e}")
@@ -219,9 +237,11 @@ def extract_holdings_and_value(html_content):
                 continue
             amount_text = amount_span.get_text(strip=True)
 
-            # Convert B/M/K values to full numbers
+            # Convert B/M/K/T values to full numbers
             try:
-                if amount_text.endswith('B'):
+                if amount_text.endswith('T'):
+                    amount = float(amount_text[:-1]) * 1_000_000_000_000
+                elif amount_text.endswith('B'):
                     amount = float(amount_text[:-1]) * 1_000_000_000
                 elif amount_text.endswith('M'):
                     amount = float(amount_text[:-1]) * 1_000_000
@@ -260,7 +280,7 @@ def extract_holdings_and_value(html_content):
     return holdings_data, total_value
 
 # **📌 Save Data to MySQL**
-def save_data_to_mysql(holdings_data, total_value):
+def save_data_to_mysql(entity_config, holdings_data, total_value):
     """Save extracted data into MySQL with all cryptocurrencies as columns."""
     if not holdings_data:
         print("No holdings data to save")
@@ -301,7 +321,7 @@ def save_data_to_mysql(holdings_data, total_value):
 
             # Insert or update query
             query = f"""
-                INSERT INTO portfolio_holdings ({columns_str})
+                INSERT INTO {entity_config['table']} ({columns_str})
                 VALUES ({placeholders})
                 ON DUPLICATE KEY UPDATE {update_str}
             """
@@ -317,14 +337,14 @@ def save_data_to_mysql(holdings_data, total_value):
         print("Database connection closed")
 
 # **📌 Load Data for Comparison**
-def load_data_from_mysql():
+def load_data_from_mysql(entity_config):
     connection = connect_to_database()
     if not connection:
         return []
 
     try:
         with connection.cursor() as cursor:
-            cursor.execute("SELECT * FROM portfolio_holdings ORDER BY date DESC")
+            cursor.execute(f"SELECT * FROM {entity_config['table']} ORDER BY date DESC")
             return cursor.fetchall()
     finally:
         connection.close()
@@ -394,9 +414,9 @@ def calculate_changes(new_data, old_data):
     return daily_changes, monthly_changes
 
 # **📌 Display Data in Table**
-def generate_table(html_content=None):
+def generate_table(entity_config, html_content=None):
     """Generate a report table from MySQL data."""
-    all_data = load_data_from_mysql()
+    all_data = load_data_from_mysql(entity_config)
     if not all_data:
         print("No historical data available.")
         return "No historical data available."
@@ -465,9 +485,9 @@ def generate_table(html_content=None):
     crypto_values.sort(key=lambda x: x[1], reverse=True)
     
     # Generate table
-    table_output = f"🦅 *World Liberty Fi* (Total Portfolio Value: ${total_value:,.2f})\n"
-    header = "{:<15} {:<12} {:<12} {:<12}".format("Asset", "Today", "Yesterday", "")  # Empty header for percentage
-    table_output += "```\n" + header + "\n" + "-" * 51 + "\n"  # Extended line for new column
+    table_output = f"{entity_config['emoji']} *{entity_config['title']}* (Total Portfolio Value: ${total_value:,.2f})\n"
+    header = "{:<12} {:<12} {:<12} {:<12}".format("Asset", "Today", "Yesterday", "")  # Empty header for percentage
+    table_output += "```\n" + header + "\n" + "-" * 48 + "\n"  # Adjusted line length for new column widths
 
     # Use sorted crypto list
     for crypto, today in crypto_values:
@@ -498,7 +518,7 @@ def generate_table(html_content=None):
             yesterday_formatted = "No Data"
             pct_formatted = ""
 
-        table_output += "{:<15} {:<12} {:<12} {:<12}\n".format(
+        table_output += "{:<12} {:<12} {:<12} {:<12}\n".format(
             crypto, today_formatted, yesterday_formatted, pct_formatted
         )
 
@@ -511,6 +531,9 @@ def generate_table(html_content=None):
 
 def get_streaks(df, columns):
     """Find the longest buying/selling streaks."""
+    if len(df) < 2:  # Need at least today and yesterday
+        return [], []
+        
     streaks = {}
     for column in columns:
         if column not in df.columns:
@@ -522,8 +545,7 @@ def get_streaks(df, columns):
         
         direction = None
         streak_count = 0
-        # Look at most recent changes first (last values in changes)
-        for change in changes.tail(30):  # Look at last 30 days max
+        for change in changes[::-1]:
             if pd.isna(change):  # Skip NaN values
                 continue
                 
@@ -542,7 +564,7 @@ def get_streaks(df, columns):
             else:
                 break
                 
-        if streak_count > 1:  # Only record if streak is longer than 1 day
+        if streak_count > 1: 
             streaks[column] = (direction, streak_count)
     
     if not streaks:
@@ -570,6 +592,9 @@ def get_streaks(df, columns):
 
 def get_reversal(df, columns):
     """Find buying to selling and selling to buying reversals."""
+    if len(df) < 3:  # Need at least 3 days to detect reversal
+        return [], []
+        
     assets = []
     messages = []
     for column in columns:
@@ -606,7 +631,7 @@ def get_reversal(df, columns):
 
 def get_max_changes(df, columns):
     """Find maximum percentage increases and decreases."""
-    if len(df) < 2:  # Need at least 2 days of data
+    if len(df) < 2:  # Need at least today and yesterday
         return [], []
         
     assets = []
@@ -650,11 +675,11 @@ def get_insight(df, display_columns=None):
     insights = []
     display_assets = set()
     
-    # Use all columns except 'date' and 'USDT' if no display_columns provided
+    # Use all columns except 'date', 'USDT', and 'total_value' if no display_columns provided
     if display_columns is None:
-        display_columns = [col for col in df.columns if col != 'date' and col != 'USDT']
+        display_columns = [col for col in df.columns if col not in ['date', 'USDT', 'total_value']]
     else:
-        display_columns = [col for col in display_columns if col != 'USDT']
+        display_columns = [col for col in display_columns if col not in ['USDT', 'total_value']]
     
     # Get all insights
     streak_assets, streak_msgs = get_streaks(df, display_columns)
@@ -675,12 +700,21 @@ def get_insight(df, display_columns=None):
     if not insights:
         return "No notable changes detected in asset holdings and trading patterns.", list(display_assets)
     
-    return "\n".join(f"*{i+1})* {insight}" for i, insight in enumerate(insights)) + "\n", list(display_assets)
+    return "\n".join(f"*{i+1})* {insight}" for i, insight in enumerate(insights)), list(display_assets)
 
 # **📌 Main Execution**
-def get_world_liberty():
-    """Main function to fetch and process World Liberty data."""
-    print("\n=== Starting World Liberty Data Collection ===")
+def get_entity_data(entity_name):
+    """Main function to fetch and process entity data."""
+    if entity_name not in ENTITIES:
+        print(f"Unknown entity: {entity_name}")
+        return None
+        
+    entity_config = ENTITIES[entity_name]
+    print(f"\n=== Starting {entity_config['title']} Data Collection ===")
+    
+    # Update URL in options
+    global URL
+    URL = entity_config['url']
     
     # Fetch data first
     html_content = fetch_data_with_firefox()
@@ -690,7 +724,7 @@ def get_world_liberty():
     print("Successfully fetched HTML content")
     
     # Initialize database with the fetched content
-    initialize_database(html_content)
+    initialize_database(entity_config, html_content)
     print("Database initialized")
 
     holdings_data, total_value = extract_holdings_and_value(html_content)
@@ -699,18 +733,18 @@ def get_world_liberty():
         return None
     print(f"Successfully extracted data for {len(holdings_data)} assets")
 
-    save_data_to_mysql(holdings_data, total_value)
+    save_data_to_mysql(entity_config, holdings_data, total_value)
     print("Data saving process completed")
     
     try:
-        msg = generate_table(html_content)
+        msg = generate_table(entity_config, html_content)
         print("Message generated successfully")
         return msg
     except Exception as e:
         print(f"Error generating table message: {str(e)}")
         return None
     finally:
-        # Stop and remove the Docker container at the end of script
+        # Stop and remove the Docker container
         try:
             client = docker.from_env()
             container_name = "selenium-firefox"
@@ -723,13 +757,28 @@ def get_world_liberty():
         except Exception as e:
             print(f"Error cleaning up container: {e}")
 
-if __name__ == "__main__":
+def get_entities():
+    """Main function to process all entities."""
+    msg = ""
     try:
-        msg = get_world_liberty()
-        if msg:
-            print("\nSuccessfully generated message:")
-            print(msg)
-        else:
-            print("\nFailed to generate message")
+        for entity_name in ENTITIES.keys():
+            entity_msg = get_entity_data(entity_name)
+            if entity_msg:
+                print(f"\nSuccessfully generated message for {entity_name}:")
+                print(entity_msg)
+                msg += entity_msg + "\n\n"  # Add newlines between entity messages
+            else:
+                print(f"\nFailed to generate message for {entity_name}")
+        return msg.rstrip()  # Remove trailing newlines
     except Exception as e:
         print(f"\nError in main process: {e}")
+        return None
+
+if __name__ == "__main__":
+    msg = get_entities()
+    if msg:
+        print("\nFinal combined message:")
+        print(msg)
+    else:
+        print("\nNo messages generated")
+        
