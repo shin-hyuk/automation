@@ -885,7 +885,7 @@ def format_insights_message(all_insights):
             no_changes_by_category[category] = category_no_changes
     
     if no_changes_by_category:
-        message += "\nEntities with No Portfolio Changes\n"
+        message += "\n*Entities with No Portfolio Changes*\n"
         for category, entities in no_changes_by_category.items():
             message += f"│   {category}: {', '.join(entities)}\n"
     
