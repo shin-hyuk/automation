@@ -715,16 +715,23 @@ def get_max_changes(df, columns):
     
     if max_increase[0] and max_increase[1] > 0:
         assets.append(max_increase[0])
+        # Calculate absolute change for max_increase[0]
+        today_value = df[max_increase[0]].iloc[-1]
+        yesterday_value = df[max_increase[0]].iloc[-2]
+        abs_change = today_value - yesterday_value
         messages.append(
-            f"Holdings of {max_increase[0]} saw largest increase (*{max_increase[1]:+.2f}%*)"
+            f"Holdings of {max_increase[0]} saw largest increase {int(abs_change):+} (*{max_increase[1]:+.2f}%*)"
         )
         
     if max_decrease[0] and max_decrease[1] < 0:
         assets.append(max_decrease[0])
+        # Calculate absolute change for max_decrease[0] 
+        today_value = df[max_decrease[0]].iloc[-1]
+        yesterday_value = df[max_decrease[0]].iloc[-2]
+        abs_change = today_value - yesterday_value
         messages.append(
-            f"Holdings of {max_decrease[0]} saw largest decrease (*{max_decrease[1]:+.2f}%*)"
+            f"Holdings of {max_decrease[0]} saw largest decrease {int(abs_change):+} (*{max_decrease[1]:+.2f}%*)"
         )
-    
     return assets, messages
 
 def get_insight(df, display_columns=None):
