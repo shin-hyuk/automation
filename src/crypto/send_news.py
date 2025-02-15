@@ -131,6 +131,7 @@ def fetch_ethereum_news():
 
     try:
         response = requests.get(url, headers=headers)
+        print(response.text)
         response.raise_for_status()
         
         soup = BeautifulSoup(response.text, 'html.parser')
