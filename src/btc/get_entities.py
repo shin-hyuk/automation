@@ -25,25 +25,81 @@ DB_PASSWORD = os.getenv('DB_PASSWORD')
 DB_NAME = os.getenv('DB_NAME')
 DB_PORT = int(os.getenv('DB_PORT', 3306))
 
-# Entity configurations
+# Base URL for all entities
+BASE_URL = "https://intel.arkm.com/explorer/entity/"
+
+# Entity configurations grouped by category
 ENTITIES = {
-    "worldliberty": {
-        "url": "https://intel.arkm.com/explorer/entity/worldlibertyfi",
-        "table": "worldliberty_holdings",
-        "emoji": "🦅",
-        "title": "World Liberty Fi"
+    "ETFs": {
+        "blackrock": {
+            "url": f"{BASE_URL}blackrock",
+            "table": "blackrock_holdings",
+            "title": "BlackRock"
+        },
+        "fidelity": {
+            "url": f"{BASE_URL}fidelity-custody",
+            "table": "fidelity_holdings",
+            "title": "Fidelity"
+        },
+        "grayscale": {
+            "url": f"{BASE_URL}grayscale",
+            "table": "grayscale_holdings",
+            "title": "Grayscale"
+        },
+        "ark": {
+            "url": f"{BASE_URL}ark-invest",
+            "table": "ark_holdings",
+            "title": "ARK Invest"
+        },
+        "bitwise": {
+            "url": f"{BASE_URL}bitwise",
+            "table": "bitwise_holdings",
+            "title": "Bitwise"
+        }
     },
-    "blackrock": {
-        "url": "https://intel.arkm.com/explorer/entity/blackrock",
-        "table": "blackrock_holdings",
-        "emoji": "🏛️",
-        "title": "BlackRock"
+    "CEX": {
+        "binance": {
+            "url": f"{BASE_URL}binance",
+            "table": "binance_holdings",
+            "title": "Binance"
+        },
+        "coinbase": {
+            "url": f"{BASE_URL}coinbase",
+            "table": "coinbase_holdings",
+            "title": "Coinbase"
+        },
+        "bitfinex": {
+            "url": f"{BASE_URL}bitfinex",
+            "table": "bitfinex_holdings",
+            "title": "Bitfinex"
+        },
+        "kraken": {
+            "url": f"{BASE_URL}kraken",
+            "table": "kraken_holdings",
+            "title": "Kraken"
+        },
+        "robinhood": {
+            "url": f"{BASE_URL}robinhood",
+            "table": "robinhood_holdings",
+            "title": "Robinhood"
+        }
     },
-    "usg": {
-        "url": "https://intel.arkm.com/explorer/entity/usg",
-        "table": "usg_holdings",
-        "emoji": "🏦",
-        "title": "US Government"
+    "Companies": {
+        "microstrategy": {
+            "url": f"{BASE_URL}microstrategy",
+            "table": "microstrategy_holdings",
+            "title": "MicroStrategy"
+        },
+        "worldliberty": {
+            "url": f"{BASE_URL}worldlibertyfi",
+            "table": "worldliberty_holdings",
+            "title": "World Liberty Fi"
+        },
+        "usg": {
+            "url": f"{BASE_URL}usg",
+            "table": "usg_holdings",
+            "title": "US Government"
+        }
     }
 }
 
@@ -73,47 +129,51 @@ def connect_to_database():
         return None
 
 # **📌 Initialize Database**
-def initialize_database(entity_config, html_content=None):
-    """Initialize database with dynamic columns for all cryptocurrencies."""
+def create_tables_if_not_exist(entity_config):
+    """Create tables for entity if they don't exist."""
+    print(f"\nCreating tables for {entity_config['title']}")
+    
+    # Fetch data to determine table structure
+    html_content = fetch_data_with_firefox(entity_config['url'])
+    if not html_content:
+        print("Unable to fetch data from website")
+        return None
+    print("Successfully fetched HTML content")
+    
+    # Initialize database tables
     connection = connect_to_database()
     if not connection:
-        return
+        return None
 
     try:
         with connection.cursor() as cursor:
-            # Create table if it doesn't exist
-            cursor.execute(f"""
-                CREATE TABLE IF NOT EXISTS {entity_config['table']} (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    date DATE NOT NULL UNIQUE,
-                    total_value DECIMAL(20,4)
-                )
-            """)
-            connection.commit()
-            print(f"Base table {entity_config['table']} is ready")
-            
             # Get all possible cryptocurrencies from the webpage
-            if not html_content:
-                return
-            
             soup = BeautifulSoup(html_content, "html.parser")
             holdings_containers = soup.find_all("div", class_="Portfolio_holdingsContainer__XyaUq")
-            crypto_columns = set()
+            crypto_list = []
             
             for container in holdings_containers:
                 symbol_span = container.find("span", class_="Portfolio_holdingsSymbol__uOpkQ")
                 if symbol_span:
                     symbol = symbol_span.get_text(strip=True)
-                    crypto_columns.add(symbol)
+                    if symbol not in crypto_list:
+                        crypto_list.append(symbol)
+
+            print(f"Found {len(crypto_list)} unique cryptocurrencies")
             
-            # Get existing columns
-            cursor.execute(f"SHOW COLUMNS FROM {entity_config['table']}")
-            existing_columns = {row['Field'] for row in cursor.fetchall()}
-            
-            # Add any new cryptocurrencies as columns
-            for symbol in crypto_columns:
-                if symbol not in existing_columns:
-                    print(f"Adding new column for {symbol}")
+            # Create tables based on number of cryptocurrencies
+            if len(crypto_list) <= 200:
+                # Single table case
+                create_query = f"""
+                    CREATE TABLE IF NOT EXISTS {entity_config['table']} (
+                        date DATE NOT NULL PRIMARY KEY
+                    )
+                """
+                cursor.execute(create_query)
+                connection.commit()
+                
+                # Add columns for cryptocurrencies
+                for symbol in crypto_list:
                     try:
                         cursor.execute(f"""
                             ALTER TABLE {entity_config['table']}
@@ -121,17 +181,53 @@ def initialize_database(entity_config, html_content=None):
                         """)
                         connection.commit()
                     except Exception as e:
-                        print(f"Error adding column {symbol}: {e}")
+                        if "Duplicate column" not in str(e):
+                            print(f"Error adding column {symbol}: {e}")
+                
+            else:
+                # Multiple tables case
+                num_tables = (len(crypto_list) // 200) + 1
+                
+                for table_num in range(1, num_tables + 1):
+                    table_name = f"{entity_config['table']}{table_num}"
+                    start_idx = (table_num - 1) * 200
+                    end_idx = min(start_idx + 200, len(crypto_list))
+                    table_cryptos = crypto_list[start_idx:end_idx]
+                    
+                    # Create table
+                    create_query = f"""
+                        CREATE TABLE IF NOT EXISTS {table_name} (
+                            date DATE NOT NULL PRIMARY KEY
+                        )
+                    """
+                    cursor.execute(create_query)
+                    connection.commit()
+                    
+                    # Add columns
+                    for symbol in table_cryptos:
+                        try:
+                            cursor.execute(f"""
+                                ALTER TABLE {table_name}
+                                ADD COLUMN `{symbol}` DECIMAL(20,4)
+                            """)
+                            connection.commit()
+                        except Exception as e:
+                            if "Duplicate column" not in str(e):
+                                print(f"Error adding column {symbol}: {e}")
             
-            print(f"Table {entity_config['table']} is ready with all crypto columns")
+            print(f"Tables created successfully for {entity_config['title']}")
+            
+            # Return the HTML content since we already fetched it
+            return html_content
             
     except Exception as e:
-        print(f"Error initializing database: {e}")
+        print(f"Error creating tables: {e}")
+        return None
     finally:
         connection.close()
 
 # **📌 Fetch Data with Selenium**
-def fetch_data_with_firefox():
+def fetch_data_with_firefox(url):
     """Fetch data using Selenium in Docker container."""
     container_name = "selenium-firefox"
     image_name = "selenium/standalone-firefox"
@@ -183,7 +279,7 @@ def fetch_data_with_firefox():
             return None
 
         print("Launching Firefox Browser...")
-        driver.get(URL)
+        driver.get(url)
 
         WebDriverWait(driver, 15).until(
             EC.presence_of_element_located((By.CLASS_NAME, "Portfolio_holdingsContainer__XyaUq"))
@@ -211,9 +307,16 @@ def extract_holdings_and_value(html_content):
     holdings_data = {}
     processed_symbols = set()
 
-    # Get total value from header
+    # Get total value from header and clean it
     total_value_element = soup.find("span", class_="Header_portfolioValue__AemOW")
-    total_value = total_value_element.get_text(strip=True) if total_value_element else "N/A"
+    total_value_str = total_value_element.get_text(strip=True) if total_value_element else "0"
+    
+    # Clean the total value string (remove $ and ,)
+    try:
+        total_value = float(total_value_str.replace('$', '').replace(',', ''))
+    except ValueError as e:
+        print(f"Error converting total value {total_value_str}: {e}")
+        total_value = 0
 
     # Find all holdings containers
     holdings_containers = soup.find_all("div", class_="Portfolio_holdingsContainer__XyaUq")
@@ -281,14 +384,13 @@ def extract_holdings_and_value(html_content):
 
 # **📌 Save Data to MySQL**
 def save_data_to_mysql(entity_config, holdings_data, total_value):
-    """Save extracted data into MySQL with all cryptocurrencies as columns."""
+    """Save data using appropriate table structure."""
     if not holdings_data:
         print("No holdings data to save")
         return
 
     connection = connect_to_database()
     if not connection:
-        print("MySQL Connection Failed.")
         return
 
     today_date = datetime.now().strftime("%Y-%m-%d")
@@ -296,58 +398,130 @@ def save_data_to_mysql(entity_config, holdings_data, total_value):
     
     try:
         with connection.cursor() as cursor:
-            # Convert total_value to float
-            if isinstance(total_value, str):
-                total_value = total_value.replace("$", "").replace(",", "")
-                try:
-                    total_value = float(total_value)
-                except ValueError:
-                    total_value = 0.0
+            # Use base table name if not using multiple tables
+            if not entity_config.get('use_multiple_tables', False):
+                table_name = entity_config['table']
+                
+                # Prepare column names and values
+                columns = ["date"] + list(holdings_data.keys())
+                values = [today_date] + list(holdings_data.values())
+                
+                # Create placeholders and update string
+                placeholders = ", ".join(["%s"] * len(columns))
+                columns_str = ", ".join(f"`{col}`" for col in columns)
+                update_str = ", ".join(
+                    f"`{col}` = VALUES(`{col}`)" 
+                    for col in columns 
+                    if col != "date"
+                )
 
-            # Prepare column names and values
-            columns = ["date"] + [f"`{key}`" for key in holdings_data.keys()] + ["total_value"]
-            values = [today_date] + list(holdings_data.values()) + [total_value]
+                # Insert or update query
+                query = f"""
+                    INSERT INTO {table_name} ({columns_str})
+                    VALUES ({placeholders})
+                    ON DUPLICATE KEY UPDATE {update_str}
+                """
+                
+                cursor.execute(query, values)
+                connection.commit()
+                print(f"Successfully saved data to {table_name}")
             
-            # Create placeholders for SQL query
-            placeholders = ", ".join(["%s"] * len(columns))
-            columns_str = ", ".join(columns)
-            
-            # Prepare DUPLICATE KEY UPDATE part
-            update_str = ", ".join(
-                f"{col} = VALUES({col})" 
-                for col in columns 
-                if col != "date"
-            )
+            else:
+                # Multiple tables approach
+                table_count = entity_config.get('table_count', 1)
+                for table_num in range(1, table_count + 1):
+                    table_name = f"{entity_config['table']}{table_num}"
+                    
+                    # Get columns for this table
+                    cursor.execute(f"SHOW COLUMNS FROM {table_name}")
+                    table_columns = {row['Field'] for row in cursor.fetchall()}
+                    
+                    # Filter holdings data for this table's columns
+                    table_holdings = {k: v for k, v in holdings_data.items() 
+                                    if k in table_columns}
+                    
+                    if table_holdings or table_num == 1:  # Always save to first table for total_value
+                        # Prepare column names and values
+                        columns = ["date"] + list(table_holdings.keys())
+                        values = [today_date] + list(table_holdings.values())
+                        
+                        if table_num == 1:  # Add total_value to first table
+                            columns.append("total_value")
+                            values.append(total_value)
+                        
+                        # Create placeholders and update string
+                        placeholders = ", ".join(["%s"] * len(columns))
+                        columns_str = ", ".join(f"`{col}`" for col in columns)
+                        update_str = ", ".join(
+                            f"`{col}` = VALUES(`{col}`)" 
+                            for col in columns 
+                            if col != "date"
+                        )
 
-            # Insert or update query
-            query = f"""
-                INSERT INTO {entity_config['table']} ({columns_str})
-                VALUES ({placeholders})
-                ON DUPLICATE KEY UPDATE {update_str}
-            """
-            
-            cursor.execute(query, values)
-            connection.commit()
-            print("Successfully saved data to database")
-            
+                        # Insert or update query
+                        query = f"""
+                            INSERT INTO {table_name} ({columns_str})
+                            VALUES ({placeholders})
+                            ON DUPLICATE KEY UPDATE {update_str}
+                        """
+                        
+                        cursor.execute(query, values)
+                        connection.commit()
+                        print(f"Successfully saved data to {table_name}")
+    
     except Exception as e:
         print(f"MySQL Save Error: {e}")
+        print(f"Failed query: {query if 'query' in locals() else 'No query generated'}")
+        connection.rollback()
     finally:
         connection.close()
-        print("Database connection closed")
 
 # **📌 Load Data for Comparison**
-def load_data_from_mysql(entity_config):
-    connection = connect_to_database()
-    if not connection:
-        return []
+def load_data_from_mysql(entity_config, table_count=0):
+    """Load data using appropriate table structure."""
+    if table_count > 0:
+        # Multiple tables load logic
+        connection = connect_to_database()
+        if not connection:
+            return []
 
-    try:
-        with connection.cursor() as cursor:
-            cursor.execute(f"SELECT * FROM {entity_config['table']} ORDER BY date DESC")
-            return cursor.fetchall()
-    finally:
-        connection.close()
+        try:
+            with connection.cursor() as cursor:
+                all_data = []
+                
+                # Load data from first table (contains total_value)
+                first_table = f"{entity_config['table']}1"
+                cursor.execute(f"SELECT * FROM {first_table} ORDER BY date DESC")
+                all_data = cursor.fetchall()
+                
+                # Load and merge data from additional tables
+                for table_num in range(2, table_count + 1):
+                    table_name = f"{entity_config['table']}{table_num}"
+                    cursor.execute(f"SELECT * FROM {table_name} ORDER BY date DESC")
+                    additional_data = cursor.fetchall()
+                    
+                    # Merge data by date
+                    for i, row in enumerate(all_data):
+                        if i < len(additional_data):
+                            all_data[i].update({k: v for k, v in additional_data[i].items() 
+                                              if k not in ['id', 'date']})
+                
+            return all_data
+        finally:
+            connection.close()
+    else:
+        # Original single table load logic
+        table_name = entity_config['table']
+        connection = connect_to_database()
+        if not connection:
+            return []
+
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(f"SELECT * FROM {table_name} ORDER BY date DESC")
+                return cursor.fetchall()
+        finally:
+            connection.close()
 
 # **📌 Calculate Changes**
 def format_number(value):
@@ -413,121 +587,6 @@ def calculate_changes(new_data, old_data):
 
     return daily_changes, monthly_changes
 
-# **📌 Display Data in Table**
-def generate_table(entity_config, html_content=None):
-    """Generate a report table from MySQL data."""
-    all_data = load_data_from_mysql(entity_config)
-    if not all_data:
-        print("No historical data available.")
-        return "No historical data available."
-
-    # Convert data to DataFrame for insights and sort by date (oldest first)
-    df = pd.DataFrame(all_data)
-    df['date'] = pd.to_datetime(df['date'])  # Ensure date is datetime
-    df = df.sort_values('date', ascending=True)  # Explicitly sort oldest to newest
-    
-    # Get insights data and display assets
-    insights, display_assets = get_insight(df)
-    
-    # Get the two most recent dates
-    dates = sorted(set(entry["date"].strftime("%Y-%m-%d") for entry in all_data), reverse=True)
-    if not dates:
-        return "No data found."
-    
-    
-    latest_date = dates[0]
-    previous_date = dates[1] if len(dates) > 1 else None
-
-    # Get the data for each date
-    latest_data = next((entry for entry in all_data if entry["date"].strftime("%Y-%m-%d") == latest_date), None)
-    previous_data = next((entry for entry in all_data if entry["date"].strftime("%Y-%m-%d") == previous_date), None)
-
-    if not latest_data:
-        return "No current data found."
-
-    # Get total value
-    total_value = float(latest_data["total_value"]) if latest_data["total_value"] else 0.0
-
-    # Create display list of cryptos
-    display_cryptos = []
-    
-    # First add DEFAULT_ASSETS
-    for asset in DEFAULT_ASSETS:
-        if asset in latest_data and asset not in display_cryptos:
-            display_cryptos.append(asset)
-    
-    # Add cryptos from insights
-    for asset in display_assets:
-        if asset not in display_cryptos:
-            display_cryptos.append(asset)
-
-    # If we still need more cryptos and we have HTML content, get them from there
-    if len(display_cryptos) < 5 and html_content:
-        soup = BeautifulSoup(html_content, "html.parser")
-        holdings_containers = soup.find_all("div", class_="Portfolio_holdingsContainer__XyaUq")
-        
-        for container in holdings_containers:
-            symbol_span = container.find("span", class_="Portfolio_holdingsSymbol__uOpkQ")
-            if symbol_span:
-                symbol = symbol_span.get_text(strip=True)
-                if symbol not in display_cryptos:
-                    display_cryptos.append(symbol)
-                    if len(display_cryptos) >= 5:
-                        break
-
-    # Create a list of tuples (crypto, current_value) for sorting
-    crypto_values = []
-    for crypto in display_cryptos:
-        if crypto in latest_data and latest_data[crypto]:
-            crypto_values.append((crypto, float(latest_data[crypto])))
-    
-    # Sort by current value in descending order
-    crypto_values.sort(key=lambda x: x[1], reverse=True)
-    
-    # Generate table
-    table_output = f"{entity_config['emoji']} *{entity_config['title']}* (Total Portfolio Value: ${total_value:,.2f})\n"
-    header = "{:<12} {:<12} {:<12} {:<12}".format("Asset", "Today", "Yesterday", "")  # Empty header for percentage
-    table_output += "```\n" + header + "\n" + "-" * 48 + "\n"  # Adjusted line length for new column widths
-
-    # Use sorted crypto list
-    for crypto, today in crypto_values:
-        # Convert today's value to float
-        today = float(today)
-        
-        # Get yesterday's value and convert to float if exists
-        yesterday = float(previous_data[crypto]) if previous_data and previous_data[crypto] is not None else None
-
-        # Format current value
-        today_formatted = format_number(today)
-
-        # Calculate and format change and percentage
-        if yesterday is not None:  # Check for None specifically
-            change = today - yesterday
-            if change > 0:
-                yesterday_formatted = f"+{format_number(abs(change))}"
-                pct_change = ((today - yesterday) / yesterday) * 100
-                pct_formatted = f"({pct_change:+.1f}%)"
-            elif change < 0:
-                yesterday_formatted = f"-{format_number(abs(change))}"
-                pct_change = ((today - yesterday) / yesterday) * 100
-                pct_formatted = f"({pct_change:+.1f}%)"
-            else:
-                yesterday_formatted = "0"
-                pct_formatted = "(=)"  # Show equals sign for no change
-        else:
-            yesterday_formatted = "No Data"
-            pct_formatted = ""
-
-        table_output += "{:<12} {:<12} {:<12} {:<12}\n".format(
-            crypto, today_formatted, yesterday_formatted, pct_formatted
-        )
-
-    table_output += "```"
-    
-    # Add insights below table
-    table_output += insights
-
-    return table_output
 
 def get_streaks(df, columns):
     """Find the longest buying/selling streaks."""
@@ -566,10 +625,9 @@ def get_streaks(df, columns):
                 
         if streak_count > 1: 
             streaks[column] = (direction, streak_count)
-    
+
     if not streaks:
         return [], []
-    
     # Group assets by direction and streak count
     max_streak = max(streak[1] for streak in streaks.values())
     buying_assets = [asset for asset, (dir, count) in streaks.items() 
@@ -583,7 +641,6 @@ def get_streaks(df, columns):
         message_parts.append(f"{', '.join(selling_assets)} selling")
     if buying_assets:
         message_parts.append(f"{', '.join(buying_assets)} buying")
-    
     if message_parts:
         messages = [f"Holdings of {' and '.join(message_parts)} for *{max_streak} days straight*"]
         return buying_assets + selling_assets, messages
@@ -675,11 +732,9 @@ def get_insight(df, display_columns=None):
     insights = []
     display_assets = set()
     
-    # Use all columns except 'date', 'USDT', and 'total_value' if no display_columns provided
+    # Use all columns except 'date', USDT and USDC if no display_columns provided
     if display_columns is None:
-        display_columns = [col for col in df.columns if col not in ['date', 'USDT', 'total_value']]
-    else:
-        display_columns = [col for col in display_columns if col not in ['USDT', 'total_value']]
+        display_columns = [col for col in df.columns if col != 'date' and 'USDT' not in col and 'USDC' not in col]
     
     # Get all insights
     streak_assets, streak_msgs = get_streaks(df, display_columns)
@@ -696,89 +751,227 @@ def get_insight(df, display_columns=None):
     display_assets.update(reversal_assets)
     display_assets.update(change_assets)
     
-    # Format insights
+    # Format insights - escape special characters for markdown
     if not insights:
-        return "No notable changes detected in asset holdings and trading patterns.", list(display_assets)
+        return None, list(display_assets)
     
-    return "\n".join(f"*{i+1})* {insight}" for i, insight in enumerate(insights)), list(display_assets)
+    # Escape special characters and format numbers
+    formatted_insights = []
+    for i, insight in enumerate(insights, 1):
+        # Replace markdown formatting with escaped versions
+        insight = insight.replace('_', '\\_')
+        insight = insight.replace('`', '\\`')
+        insight = insight.replace('[', '\\[')
+        insight = insight.replace(']', '\\]')
+        if len(insights) == 1:
+            formatted_insights.append(insight)
+        else:
+            formatted_insights.append(f"{i}) {insight}")
+    
+    return formatted_insights, list(display_assets)
 
 # **📌 Main Execution**
-def get_entity_data(entity_name):
+def get_entity_data(entity_config):
     """Main function to fetch and process entity data."""
-    if entity_name not in ENTITIES:
-        print(f"Unknown entity: {entity_name}")
-        return None
-        
-    entity_config = ENTITIES[entity_name]
     print(f"\n=== Starting {entity_config['title']} Data Collection ===")
     
-    # Update URL in options
-    global URL
-    URL = entity_config['url']
-    
-    # Fetch data first
-    html_content = fetch_data_with_firefox()
-    if not html_content:
-        print("Unable to fetch data from website")
+    # Check if we already have today's data
+    connection = connect_to_database()
+    if not connection:
         return None
-    print("Successfully fetched HTML content")
+        
+    try:
+        with connection.cursor() as cursor:
+            today_date = datetime.now().strftime("%Y-%m-%d")
+            has_today_data = False
+            final_table_count = 0
+            
+            # First check if base table exists
+            try:
+                cursor.execute(f"""
+                    SELECT COUNT(*) as count 
+                    FROM {entity_config['table']} 
+                    WHERE date = %s
+                """, (today_date,))
+                result = cursor.fetchone()
+
+                if result:
+                    print(f"  ✓ Found today's data in {entity_config['table']}")
+                    has_today_data = True
+                else:
+                    print(f"  × No data for today in {entity_config['table']}")
+            except Exception as e:
+                # Base table doesn't exist, continue to check numbered tables
+                pass
+
+            # If base table exists, check numbered tables
+            table_count = 1
+            while True:
+                table_pattern = f"{entity_config['table']}{table_count}"
+                try:
+                    cursor.execute(f"""
+                        SELECT COUNT(*) as count 
+                        FROM {table_pattern} 
+                        WHERE date = %s
+                    """, (today_date,))
+                    result = cursor.fetchone()
+
+                    if result:
+                        print(f"  ✓ Found today's data in {table_pattern}")
+                        has_today_data = True
+                    else:
+                        print(f"  × No data for today in {table_pattern}")
+                    
+                    table_count += 1
+                    final_table_count = table_count - 1
+                except Exception as e:
+                    # No more tables exist
+                    break
+            
+            if has_today_data:
+                return load_data_from_mysql(entity_config, final_table_count)
+            
+            print(f"\nNo data found for today, proceeding with data collection")
+            
+            # Create tables if they don't exist
+            html_content = create_tables_if_not_exist(entity_config)
+            if not html_content:
+                return None
+                
+            # Process and save new data
+            holdings_data, total_value = extract_holdings_and_value(html_content)
+            if not holdings_data:
+                print("Unable to extract holdings data")
+                return None
+            print(f"Successfully extracted data for {len(holdings_data)} assets")
+
+            save_data_to_mysql(entity_config, holdings_data, total_value)
+            print("Data saving process completed")
+            
+            # Return the newly saved data with the final table count
+            return load_data_from_mysql(entity_config, final_table_count)
+            
+    except Exception as e:
+        print(f"Error checking existing data: {e}")
+    finally:
+        connection.close()
+
+def format_insights_message(all_insights):
+    """Format insights into a readable message."""
+    message = "🐋 *WHALE TRACKER*\n\n"
+    no_changes_by_category = {}
     
-    # Initialize database with the fetched content
-    initialize_database(entity_config, html_content)
-    print("Database initialized")
+    for category, entities in ENTITIES.items():
+        has_insights = False
+        category_message = f"*{category}*\n"
+        temp_message = ""
+        category_no_changes = []
+        for entity_name, entity_config in entities.items():
+            if category not in all_insights or entity_name not in all_insights[category]:
+                category_no_changes.append(entity_config['title'])
+            else:
+                has_insights = True
+                changes = all_insights[category][entity_name]
+                temp_message += f"│   {entity_config['title']}\n"
+                for change in changes:
+                    temp_message += f"│   └── {change}\n"
+        
+        if has_insights:
+            message += category_message + temp_message
+            if category != list(ENTITIES.keys())[-1]:
+                message += "\n"
 
-    holdings_data, total_value = extract_holdings_and_value(html_content)
-    if not holdings_data:
-        print("Unable to extract holdings data")
-        return None
-    print(f"Successfully extracted data for {len(holdings_data)} assets")
+        if category_no_changes:
+            no_changes_by_category[category] = category_no_changes
+    
+    if no_changes_by_category:
+        message += "\n*Entities with No Portfolio Changes*\n"
+        for category, entities in no_changes_by_category.items():
+            message += f"│   {category}: {', '.join(entities)}\n"
+    
+    return message
 
-    save_data_to_mysql(entity_config, holdings_data, total_value)
-    print("Data saving process completed")
+def get_entities():
+    """Main function to process all entities and generate insights."""
+    all_insights = {}
     
     try:
-        msg = generate_table(entity_config, html_content)
-        print("Message generated successfully")
-        return msg
-    except Exception as e:
-        print(f"Error generating table message: {str(e)}")
-        return None
-    finally:
-        # Stop and remove the Docker container
+        # Start Docker container at beginning
+        client = docker.from_env()
+        container_name = "selenium-firefox"
+        
+        # Clean up any existing container first
         try:
-            client = docker.from_env()
-            container_name = "selenium-firefox"
             container = client.containers.get(container_name)
-            print(f"Stopping and removing {container_name} container")
+            print(f"Found existing container {container_name}, removing it...")
             container.stop()
             container.remove()
+        except docker.errors.NotFound:
+            print(f"No existing container {container_name} found")
+
+        # Start new container
+        print(f"Starting new {container_name} container...")
+        client.containers.run(
+            "selenium/standalone-firefox",
+            name=container_name,
+            ports={"4444/tcp": 4444},
+            detach=True,
+        )
+        print("Docker container started")
+        
+        # Process all entities
+        for category, entities in ENTITIES.items():
+            category_insights = {}
+            for entity_name, entity_config in entities.items():
+                print(f"\nProcessing {entity_config['title']}...")
+                
+                entity_data = get_entity_data(entity_config)
+                if entity_data and len(entity_data) > 0:
+                    try:
+                        df = pd.DataFrame(list(entity_data))
+                        if not df.empty:
+                            df['date'] = pd.to_datetime(df['date'])
+                            df = df.sort_values('date', ascending=True)
+                            insights, _ = get_insight(df)
+                            if insights:
+                                category_insights[entity_name] = insights
+                    except Exception as e:
+                        print(f"Error processing data for {entity_config['title']}: {e}")
+                else:
+                    print(f"No data available for {entity_config['title']}")
+            
+            if category_insights:
+                all_insights[category] = category_insights
+        
+        # Format and return the final message
+        if all_insights:
+            print(format_insights_message(all_insights))
+            return format_insights_message(all_insights)
+        else:
+            return "No insights generated for any entity"
+        
+    except Exception as e:
+        print(f"\nError in main process: {e}")
+        return f"Error processing entities: {str(e)}"
+    finally:
+        # Clean up Docker container at the end
+        try:
+            container = client.containers.get(container_name)
+            print(f"\nStopping and removing {container_name} container...")
+            container.stop()
+            container.remove()
+            print("Container cleanup completed")
         except docker.errors.NotFound:
             print(f"Container {container_name} already removed")
         except Exception as e:
             print(f"Error cleaning up container: {e}")
 
-def get_entities():
-    """Main function to process all entities."""
-    msg = ""
-    try:
-        for entity_name in ENTITIES.keys():
-            entity_msg = get_entity_data(entity_name)
-            if entity_msg:
-                print(f"\nSuccessfully generated message for {entity_name}:")
-                print(entity_msg)
-                msg += entity_msg + "\n\n"  # Add newlines between entity messages
-            else:
-                print(f"\nFailed to generate message for {entity_name}")
-        return msg.rstrip()  # Remove trailing newlines
-    except Exception as e:
-        print(f"\nError in main process: {e}")
-        return None
-
 if __name__ == "__main__":
     msg = get_entities()
+
     if msg:
-        print("\nFinal combined message:")
+        print("\nFinal message:")
         print(msg)
     else:
-        print("\nNo messages generated")
+        print("\nNo insights generated")
         

@@ -3,7 +3,7 @@ import btc
 def get_daily2():
     print("\nGenerating daily report (part 2)...")
     try:
-        msg = btc.get_chain()
+        msg = btc.get_entities()
         print("Daily report (part 2) completed\n")
         return msg
         
