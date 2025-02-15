@@ -233,18 +233,19 @@ def get_order_book():
     container_name = "selenium-chromium"
     image_name = "selenium/standalone-chromium"
 
-    # Start the Docker container
-    start_docker_container(container_name, image_name)
-    # Run Selenium automation
-    url = "https://wbtc.network/dashboard/order-book"
-    content = fetch_dynamic_content(url)
-    
-    network_value, custody_value_btc, custody_value_usd = extract_numbers_from_content(content)
-    stop_docker_container(container_name)
-
-    msg = format_message(network_value, custody_value_btc, custody_value_usd)
-    
-    return msg
+    try:
+        # Start the Docker container
+        start_docker_container(container_name, image_name)
+        # Run Selenium automation
+        url = "https://wbtc.network/dashboard/order-book"
+        content = fetch_dynamic_content(url)
+        
+        network_value, custody_value_btc, custody_value_usd = extract_numbers_from_content(content)
+        msg = format_message(network_value, custody_value_btc, custody_value_usd)
+        
+        return msg
+    finally:
+        stop_docker_container(container_name)  # Ensure container is always stopped
 
 if __name__ == "__main__":
     # For testing purposes
