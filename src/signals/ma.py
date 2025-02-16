@@ -33,7 +33,7 @@ async def main():
         
         # Get Upper Band and trend values
         upper_band = float(data['Upper'])
-        upper_band = 97200
+        upper_band = 97000
         
         # Get current price from Binance
         current_price = get_binance_price("BTC/USDT")
