@@ -33,6 +33,7 @@ async def main():
         
         # Get Upper Band and trend values
         upper_band = float(data['Upper'])
+        upper_band = 97200
         st_trend = float(data['ST_trend'])
         lt_trend = float(data['LT_trend'])
         
