@@ -128,26 +128,74 @@ def connect_to_database():
         print(f"❌ MySQL Connection Error: {e}")
         return None
 
-# **📌 Initialize Database**
-def create_tables_if_not_exist(entity_config):
+def check_and_create_table(cursor, table_name, existing_tables, existing_columns):
+    """Check if table exists and create if it doesn't. Return True if table exists/created."""
+    try:
+        # First check if table exists
+        cursor.execute(f"SHOW TABLES LIKE '{table_name}'")
+        table_exists = cursor.fetchone() is not None
+        
+        if not table_exists:
+            print(f"Table {table_name} doesn't exist, creating it")
+            create_query = f"""
+                CREATE TABLE IF NOT EXISTS {table_name} (
+                    date DATE NOT NULL PRIMARY KEY
+                )
+            """
+            cursor.execute(create_query)
+        
+        # Now get columns regardless of whether table was just created or existed
+        cursor.execute(f"SHOW COLUMNS FROM {table_name}")
+        columns = {row['Field'] for row in cursor.fetchall()}
+        existing_tables.append(table_name)
+        existing_columns.update(columns)
+        print(f"Found table {table_name}")
+        return True
+    except Exception as e:
+        print(f"Error checking/creating table {table_name}: {e}")
+        return False
+
+def get_table_info(cursor, entity_config):
+    """Get all tables and their columns for an entity. Returns (existing_tables, table_columns)."""
+    existing_tables = []
+    table_columns = {}
+    
+    # Check numbered tables
+    table_num = 1
+    while True:
+        table_name = f"{entity_config['table']}{table_num}"
+        try:
+            cursor.execute(f"SHOW COLUMNS FROM {table_name}")
+            columns = {row['Field'] for row in cursor.fetchall()}
+            if 'date' in columns:
+                columns.remove('date')
+            existing_tables.append(table_name)
+            table_columns[table_name] = columns
+            table_num += 1
+        except Exception:
+            break
+            
+    return existing_tables, table_columns
+
+def create_tables_if_not_exist(entity_config, html_content=None):
     """Create tables for entity if they don't exist."""
-    print(f"\nCreating tables for {entity_config['title']}")
+    print(f"\nChecking tables for {entity_config['title']}")
     
-    # Fetch data to determine table structure
-    html_content = fetch_data_with_firefox(entity_config['url'])
+    # Fetch data if not provided
     if not html_content:
-        print("Unable to fetch data from website")
-        return None
-    print("Successfully fetched HTML content")
+        html_content = fetch_data_with_firefox(entity_config['url'])
+        if not html_content:
+            print("Unable to fetch data from website")
+            return None
+        print("Successfully fetched HTML content")
     
-    # Initialize database tables
     connection = connect_to_database()
     if not connection:
         return None
 
     try:
         with connection.cursor() as cursor:
-            # Get all possible cryptocurrencies from the webpage
+            # Get crypto list from HTML
             soup = BeautifulSoup(html_content, "html.parser")
             holdings_containers = soup.find_all("div", class_="Portfolio_holdingsContainer__XyaUq")
             crypto_list = []
@@ -161,67 +209,83 @@ def create_tables_if_not_exist(entity_config):
 
             print(f"Found {len(crypto_list)} unique cryptocurrencies")
             
-            # Create tables based on number of cryptocurrencies
-            if len(crypto_list) <= 200:
-                # Single table case
-                create_query = f"""
-                    CREATE TABLE IF NOT EXISTS {entity_config['table']} (
-                        date DATE NOT NULL PRIMARY KEY
-                    )
-                """
-                cursor.execute(create_query)
-                connection.commit()
+            # Get existing tables and columns
+            existing_tables, table_columns = get_table_info(cursor, entity_config)
+            
+            # Get all existing cryptos across all tables
+            all_existing_cryptos = set()
+            for columns in table_columns.values():
+                all_existing_cryptos.update(columns)
+            
+            # Find new cryptocurrencies
+            new_cryptos = [crypto for crypto in crypto_list if crypto not in all_existing_cryptos]
+            
+            if new_cryptos:
+                print(f"Found {len(new_cryptos)} new cryptocurrencies to add")
                 
-                # Add columns for cryptocurrencies
-                for symbol in crypto_list:
-                    try:
-                        cursor.execute(f"""
-                            ALTER TABLE {entity_config['table']}
-                            ADD COLUMN `{symbol}` DECIMAL(20,4)
-                        """)
+                if not existing_tables:
+                    # Calculate how many tables we need for new cryptos
+                    num_tables_needed = (len(new_cryptos) // 500) + (1 if len(new_cryptos) % 500 > 0 else 0)
+                    print(f"Creating {num_tables_needed} new tables")
+                    
+                    # Create all needed tables
+                    for table_num in range(num_tables_needed):
+                        start_idx = table_num * 500
+                        end_idx = min((table_num + 1) * 500, len(new_cryptos))
+                        table_cryptos = new_cryptos[start_idx:end_idx]
+                        
+                        table_name = f"{entity_config['table']}{table_num + 1}"
+                        create_query = f"""
+                            CREATE TABLE IF NOT EXISTS {table_name} (
+                                date DATE NOT NULL PRIMARY KEY,
+                                {', '.join(f'`{symbol}` DECIMAL(32,4)' for symbol in table_cryptos)}
+                            )
+                        """
+                        cursor.execute(create_query)
                         connection.commit()
-                    except Exception as e:
-                        if "Duplicate column" not in str(e):
-                            print(f"Error adding column {symbol}: {e}")
-                
-            else:
-                # Multiple tables case
-                num_tables = (len(crypto_list) // 200) + 1
-                
-                for table_num in range(1, num_tables + 1):
-                    table_name = f"{entity_config['table']}{table_num}"
-                    start_idx = (table_num - 1) * 200
-                    end_idx = min(start_idx + 200, len(crypto_list))
-                    table_cryptos = crypto_list[start_idx:end_idx]
+                        print(f"Created {table_name} with {len(table_cryptos)} columns")
+                        
+                        existing_tables.append(table_name)
+                        table_columns[table_name] = set(table_cryptos)
+                else:
+                    # Add to existing tables logic (unchanged)
+                    last_table = existing_tables[-1]
+                    last_table_columns = len(table_columns[last_table])
                     
-                    # Create table
-                    create_query = f"""
-                        CREATE TABLE IF NOT EXISTS {table_name} (
-                            date DATE NOT NULL PRIMARY KEY
-                        )
-                    """
-                    cursor.execute(create_query)
-                    connection.commit()
-                    
-                    # Add columns
-                    for symbol in table_cryptos:
+                    for symbol in new_cryptos:
+                        if last_table_columns >= 500:
+                            new_table = f"{entity_config['table']}{len(existing_tables) + 1}"
+                            create_query = f"""
+                                CREATE TABLE IF NOT EXISTS {new_table} (
+                                    date DATE NOT NULL PRIMARY KEY
+                                )
+                            """
+                            cursor.execute(create_query)
+                            connection.commit()
+                            existing_tables.append(new_table)
+                            table_columns[new_table] = set()
+                            last_table = new_table
+                            last_table_columns = 0
+                        
                         try:
                             cursor.execute(f"""
-                                ALTER TABLE {table_name}
-                                ADD COLUMN `{symbol}` DECIMAL(20,4)
+                                ALTER TABLE {last_table}
+                                ADD COLUMN `{symbol}` DECIMAL(32,4)
                             """)
                             connection.commit()
+                            print(f"Added column {symbol} to {last_table}")
+                            last_table_columns += 1
+                            table_columns[last_table].add(symbol)
                         except Exception as e:
                             if "Duplicate column" not in str(e):
-                                print(f"Error adding column {symbol}: {e}")
+                                print(f"Error adding column {symbol} to {last_table}: {e}")
+            else:
+                print("No new cryptocurrencies to add")
             
-            print(f"Tables created successfully for {entity_config['title']}")
-            
-            # Return the HTML content since we already fetched it
-            return html_content
+            return html_content, existing_tables, table_columns
             
     except Exception as e:
-        print(f"Error creating tables: {e}")
+        print(f"Error managing tables: {e}")
         return None
     finally:
         connection.close()
@@ -298,25 +362,14 @@ def fetch_data_with_firefox(url):
 
 # **📌 Extract Data**
 def extract_holdings_and_value(html_content):
-    """Extract holdings and value from HTML content."""
+    """Extract holdings from HTML content."""
     if not html_content:
         print("No HTML content to parse")
-        return None, None
+        return None
 
     soup = BeautifulSoup(html_content, "html.parser")
     holdings_data = {}
     processed_symbols = set()
-
-    # Get total value from header and clean it
-    total_value_element = soup.find("span", class_="Header_portfolioValue__AemOW")
-    total_value_str = total_value_element.get_text(strip=True) if total_value_element else "0"
-    
-    # Clean the total value string (remove $ and ,)
-    try:
-        total_value = float(total_value_str.replace('$', '').replace(',', ''))
-    except ValueError as e:
-        print(f"Error converting total value {total_value_str}: {e}")
-        total_value = 0
 
     # Find all holdings containers
     holdings_containers = soup.find_all("div", class_="Portfolio_holdingsContainer__XyaUq")
@@ -377,13 +430,13 @@ def extract_holdings_and_value(html_content):
 
     if not holdings_data:
         print("No valid holdings data extracted")
-        return None, None
+        return None
 
     print(f"Successfully extracted {len(holdings_data)} holdings")
-    return holdings_data, total_value
+    return holdings_data
 
 # **📌 Save Data to MySQL**
-def save_data_to_mysql(entity_config, holdings_data, total_value):
+def save_data_to_mysql(entity_config, holdings_data, existing_tables=None, table_columns=None):
     """Save data using appropriate table structure."""
     if not holdings_data:
         print("No holdings data to save")
@@ -398,130 +451,100 @@ def save_data_to_mysql(entity_config, holdings_data, total_value):
     
     try:
         with connection.cursor() as cursor:
-            # Use base table name if not using multiple tables
-            if not entity_config.get('use_multiple_tables', False):
-                table_name = entity_config['table']
-                
-                # Prepare column names and values
-                columns = ["date"] + list(holdings_data.keys())
-                values = [today_date] + list(holdings_data.values())
-                
-                # Create placeholders and update string
-                placeholders = ", ".join(["%s"] * len(columns))
-                columns_str = ", ".join(f"`{col}`" for col in columns)
-                update_str = ", ".join(
-                    f"`{col}` = VALUES(`{col}`)" 
-                    for col in columns 
-                    if col != "date"
-                )
+            # Get table info if not provided
+            if not existing_tables or not table_columns:
+                existing_tables, table_columns = get_table_info(cursor, entity_config)
 
-                # Insert or update query
-                query = f"""
-                    INSERT INTO {table_name} ({columns_str})
-                    VALUES ({placeholders})
-                    ON DUPLICATE KEY UPDATE {update_str}
-                """
+            # Save data to appropriate tables
+            for table_name in existing_tables:
+                # Filter holdings data for this table's columns
+                table_holdings = {k: v for k, v in holdings_data.items() 
+                                if k in table_columns[table_name]}
                 
-                cursor.execute(query, values)
-                connection.commit()
-                print(f"Successfully saved data to {table_name}")
-            
-            else:
-                # Multiple tables approach
-                table_count = entity_config.get('table_count', 1)
-                for table_num in range(1, table_count + 1):
-                    table_name = f"{entity_config['table']}{table_num}"
+                if table_holdings:
+                    # Prepare column names and values
+                    columns = ["date"] + list(table_holdings.keys())
+                    values = [today_date] + list(table_holdings.values())
                     
-                    # Get columns for this table
-                    cursor.execute(f"SHOW COLUMNS FROM {table_name}")
-                    table_columns = {row['Field'] for row in cursor.fetchall()}
-                    
-                    # Filter holdings data for this table's columns
-                    table_holdings = {k: v for k, v in holdings_data.items() 
-                                    if k in table_columns}
-                    
-                    if table_holdings or table_num == 1:  # Always save to first table for total_value
-                        # Prepare column names and values
-                        columns = ["date"] + list(table_holdings.keys())
-                        values = [today_date] + list(table_holdings.values())
-                        
-                        if table_num == 1:  # Add total_value to first table
-                            columns.append("total_value")
-                            values.append(total_value)
-                        
-                        # Create placeholders and update string
-                        placeholders = ", ".join(["%s"] * len(columns))
-                        columns_str = ", ".join(f"`{col}`" for col in columns)
-                        update_str = ", ".join(
-                            f"`{col}` = VALUES(`{col}`)" 
-                            for col in columns 
-                            if col != "date"
-                        )
+                    # Create placeholders and update string
+                    placeholders = ", ".join(["%s"] * len(columns))
+                    columns_str = ", ".join(f"`{col}`" for col in columns)
+                    update_str = ", ".join(
+                        f"`{col}` = VALUES(`{col}`)" 
+                        for col in columns 
+                        if col != "date"
+                    )
 
-                        # Insert or update query
-                        query = f"""
-                            INSERT INTO {table_name} ({columns_str})
-                            VALUES ({placeholders})
-                            ON DUPLICATE KEY UPDATE {update_str}
-                        """
-                        
-                        cursor.execute(query, values)
-                        connection.commit()
-                        print(f"Successfully saved data to {table_name}")
+                    query = f"""
+                        INSERT INTO {table_name} ({columns_str})
+                        VALUES ({placeholders})
+                        ON DUPLICATE KEY UPDATE {update_str}
+                    """
+                    
+                    cursor.execute(query, values)
+                    connection.commit()
+                    print(f"Successfully saved data to {table_name}")
     
     except Exception as e:
         print(f"MySQL Save Error: {e}")
-        print(f"Failed query: {query if 'query' in locals() else 'No query generated'}")
         connection.rollback()
     finally:
         connection.close()
 
 # **📌 Load Data for Comparison**
-def load_data_from_mysql(entity_config, table_count=0):
-    """Load data using appropriate table structure."""
-    if table_count > 0:
-        # Multiple tables load logic
-        connection = connect_to_database()
-        if not connection:
-            return []
+def load_data_from_mysql(entity_config):
+    """Load data from all tables for an entity."""
+    connection = connect_to_database()
+    if not connection:
+        return []
 
-        try:
-            with connection.cursor() as cursor:
-                all_data = []
+    try:
+        with connection.cursor() as cursor:
+            all_data = []
+            existing_tables = []
+            
+            # First check base table
+            try:
+                cursor.execute(f"SHOW TABLES LIKE '{entity_config['table']}'")
+                if cursor.fetchone():
+                    existing_tables.append(entity_config['table'])
+            except Exception:
+                pass
                 
-                # Load data from first table (contains total_value)
-                first_table = f"{entity_config['table']}1"
-                cursor.execute(f"SELECT * FROM {first_table} ORDER BY date DESC")
-                all_data = cursor.fetchall()
-                
-                # Load and merge data from additional tables
-                for table_num in range(2, table_count + 1):
-                    table_name = f"{entity_config['table']}{table_num}"
-                    cursor.execute(f"SELECT * FROM {table_name} ORDER BY date DESC")
-                    additional_data = cursor.fetchall()
-                    
-                    # Merge data by date
-                    for i, row in enumerate(all_data):
-                        if i < len(additional_data):
-                            all_data[i].update({k: v for k, v in additional_data[i].items() 
-                                              if k not in ['id', 'date']})
-                
-            return all_data
-        finally:
-            connection.close()
-    else:
-        # Original single table load logic
-        table_name = entity_config['table']
-        connection = connect_to_database()
-        if not connection:
-            return []
-
-        try:
-            with connection.cursor() as cursor:
+            # Then check numbered tables
+            table_num = 1
+            while True:
+                table_name = f"{entity_config['table']}{table_num}"
+                try:
+                    cursor.execute(f"SHOW TABLES LIKE '{table_name}'")
+                    if cursor.fetchone():
+                        existing_tables.append(table_name)
+                        table_num += 1
+                    else:
+                        break
+                except Exception:
+                    break
+            
+            if not existing_tables:
+                return []
+            
+            # Load and merge data from all tables
+            for i, table_name in enumerate(existing_tables):
                 cursor.execute(f"SELECT * FROM {table_name} ORDER BY date DESC")
-                return cursor.fetchall()
-        finally:
-            connection.close()
+                table_data = cursor.fetchall()
+                
+                if i == 0:
+                    all_data = table_data  # First table data becomes base
+                else:
+                    # Merge additional table data
+                    for j, row in enumerate(all_data):
+                        if j < len(table_data):
+                            all_data[j].update({k: v for k, v in table_data[j].items() 
+                                              if k not in ['date']})
+            
+            return all_data
+    finally:
+        connection.close()
 
 # **📌 Calculate Changes**
 def format_number(value):
@@ -628,6 +651,7 @@ def get_streaks(df, columns):
 
     if not streaks:
         return [], []
+        
     # Group assets by direction and streak count
     max_streak = max(streak[1] for streak in streaks.values())
     buying_assets = [asset for asset, (dir, count) in streaks.items() 
@@ -635,17 +659,14 @@ def get_streaks(df, columns):
     selling_assets = [asset for asset, (dir, count) in streaks.items() 
                      if count == max_streak and dir == "selling"]
     
-    # Create combined message
-    message_parts = []
-    if selling_assets:
-        message_parts.append(f"{', '.join(selling_assets)} selling")
-    if buying_assets:
-        message_parts.append(f"{', '.join(buying_assets)} buying")
-    if message_parts:
-        messages = [f"Holdings of {' and '.join(message_parts)} for *{max_streak} days straight*"]
-        return buying_assets + selling_assets, messages
+    # Create simplified messages
+    messages = []
+    for asset in buying_assets:
+        messages.append(f"{asset} buying for *{max_streak} days straight*")
+    for asset in selling_assets:
+        messages.append(f"{asset} selling for *{max_streak} days straight*")
     
-    return [], []
+    return buying_assets + selling_assets, messages
 
 def get_reversal(df, columns):
     """Find buying to selling and selling to buying reversals."""
@@ -700,7 +721,7 @@ def get_max_changes(df, columns):
         if column not in df.columns:
             continue
             
-        today_value = df[column].iloc[-1]  # Include today's value
+        today_value = df[column].iloc[-1]
         yesterday_value = df[column].iloc[-2]
         
         if yesterday_value == 0:
@@ -715,23 +736,24 @@ def get_max_changes(df, columns):
     
     if max_increase[0] and max_increase[1] > 0:
         assets.append(max_increase[0])
-        # Calculate absolute change for max_increase[0]
+        # Calculate absolute change
         today_value = df[max_increase[0]].iloc[-1]
         yesterday_value = df[max_increase[0]].iloc[-2]
         abs_change = today_value - yesterday_value
         messages.append(
-            f"Holdings of {max_increase[0]} saw largest increase {int(abs_change):+} (*{max_increase[1]:+.2f}%*)"
+            f"{max_increase[0]} +{int(abs_change)} (*{max_increase[1]:+.2f}%*)"
         )
         
     if max_decrease[0] and max_decrease[1] < 0:
         assets.append(max_decrease[0])
-        # Calculate absolute change for max_decrease[0] 
+        # Calculate absolute change
         today_value = df[max_decrease[0]].iloc[-1]
         yesterday_value = df[max_decrease[0]].iloc[-2]
         abs_change = today_value - yesterday_value
         messages.append(
-            f"Holdings of {max_decrease[0]} saw largest decrease {int(abs_change):+} (*{max_decrease[1]:+.2f}%*)"
+            f"{max_decrease[0]} {int(abs_change):+} (*{max_decrease[1]:+.2f}%*)"
         )
+    
     return assets, messages
 
 def get_insight(df, display_columns=None):
@@ -743,46 +765,90 @@ def get_insight(df, display_columns=None):
     if display_columns is None:
         display_columns = [col for col in df.columns if col != 'date' and 'USDT' not in col and 'USDC' not in col]
     
-    # Get all insights
+    # Get all insights but keep them separate
     streak_assets, streak_msgs = get_streaks(df, display_columns)
     reversal_assets, reversal_msgs = get_reversal(df, display_columns)
     change_assets, change_msgs = get_max_changes(df, display_columns)
     
-    # Add all messages in order
+    # Add messages in specific order:
+    # 1. Changes (increases/decreases)
+    # 2. Streaks
+    # 3. Reversals
+    insights.extend(change_msgs)
     insights.extend(streak_msgs)
     insights.extend(reversal_msgs)
-    insights.extend(change_msgs)
     
     # Collect unique assets for display
+    display_assets.update(change_assets)
     display_assets.update(streak_assets)
     display_assets.update(reversal_assets)
-    display_assets.update(change_assets)
     
-    # Format insights - escape special characters for markdown
     if not insights:
         return None, list(display_assets)
     
-    # Escape special characters and format numbers
-    formatted_insights = []
-    for i, insight in enumerate(insights, 1):
-        # Replace markdown formatting with escaped versions
-        insight = insight.replace('_', '\\_')
-        insight = insight.replace('`', '\\`')
-        insight = insight.replace('[', '\\[')
-        insight = insight.replace(']', '\\]')
-        if len(insights) == 1:
-            formatted_insights.append(insight)
-        else:
-            formatted_insights.append(f"{i}) {insight}")
+    return insights, list(display_assets)
+
+def check_column_overlaps(cursor, entity_config):
+    """Debug function to check for any column overlaps between tables."""
+    print(f"\nChecking for column overlaps in {entity_config['title']} tables...")
     
-    return formatted_insights, list(display_assets)
+    # Get all tables for this entity
+    table_num = 1
+    tables = []
+    columns_by_table = {}
+    
+    while True:
+        table_name = f"{entity_config['table']}{table_num}"
+        try:
+            cursor.execute(f"SHOW COLUMNS FROM {table_name}")
+            columns = {row['Field'] for row in cursor.fetchall()}
+            if 'date' in columns:
+                columns.remove('date')
+            tables.append(table_name)
+            columns_by_table[table_name] = columns
+            table_num += 1
+        except Exception:
+            break
+    
+    if not tables:
+        print("No tables found")
+        return False
+    
+    # Check for overlaps
+    overlaps_found = False
+    for i, table1 in enumerate(tables):
+        for table2 in tables[i+1:]:
+            overlap = columns_by_table[table1] & columns_by_table[table2]
+            if overlap:
+                overlaps_found = True
+                print(f"⚠️ Found overlapping columns between {table1} and {table2}:")
+                print(f"  Overlapping columns: {sorted(overlap)}")
+    
+    # Check column counts
+    for table in tables:
+        column_count = len(columns_by_table[table])
+        if column_count > 500:
+            overlaps_found = True
+            print(f"⚠️ Table {table} has {column_count} columns (exceeds 500 limit)")
+    
+    # Print summary
+    total_unique_columns = len(set().union(*columns_by_table.values()))
+    print(f"\nSummary for {entity_config['title']}:")
+    print(f"- Found {len(tables)} tables")
+    print(f"- Total unique columns across all tables: {total_unique_columns}")
+    for table in tables:
+        print(f"- {table}: {len(columns_by_table[table])} columns")
+    
+    if not overlaps_found:
+        print("✅ No overlaps or issues found")
+    
+    return not overlaps_found
 
 # **📌 Main Execution**
 def get_entity_data(entity_config):
     """Main function to fetch and process entity data."""
     print(f"\n=== Starting {entity_config['title']} Data Collection ===")
     
-    # Check if we already have today's data
     connection = connect_to_database()
     if not connection:
         return None
@@ -790,81 +856,70 @@ def get_entity_data(entity_config):
     try:
         with connection.cursor() as cursor:
             today_date = datetime.now().strftime("%Y-%m-%d")
-            has_today_data = False
-            final_table_count = 0
             
-            # First check if base table exists
-            try:
-                cursor.execute(f"""
-                    SELECT COUNT(*) as count 
-                    FROM {entity_config['table']} 
-                    WHERE date = %s
-                """, (today_date,))
-                result = cursor.fetchone()
-                if result and result[0] > 0:
-                    print(f"  ✓ Found today's data in {entity_config['table']}")
-                    has_today_data = True
-                else:
-                    print(f"  × No data for today in {entity_config['table']}")
-            except Exception as e:
-                # Base table doesn't exist, continue to check numbered tables
-                pass
-
-            # If base table exists, check numbered tables
-            table_count = 1
-            while True:
-                table_pattern = f"{entity_config['table']}{table_count}"
-                try:
+            # Get table info once
+            existing_tables, table_columns = get_table_info(cursor, entity_config)
+            
+            if not existing_tables:
+                print("No tables found, will create new ones")
+                html_content = fetch_data_with_firefox(entity_config['url'])
+                if not html_content:
+                    return None
+                result = create_tables_if_not_exist(entity_config, html_content)
+                if not result:
+                    return None
+                html_content, existing_tables, table_columns = result
+                
+                # Process and save new data
+                holdings_data = extract_holdings_and_value(html_content)
+                if not holdings_data:
+                    print("Unable to extract holdings data")
+                    return None
+                
+                save_data_to_mysql(entity_config, holdings_data, 
+                                 existing_tables, table_columns)
+            else:
+                # Check if today's data exists in any table
+                has_today_data = False
+                for table_name in existing_tables:
                     cursor.execute(f"""
                         SELECT COUNT(*) as count 
-                        FROM {table_pattern} 
+                        FROM {table_name} 
                         WHERE date = %s
                     """, (today_date,))
                     result = cursor.fetchone()
-
-                    if result:
-                        print(f"  ✓ Found today's data in {table_pattern}")
+                    if result and result['count'] > 0:
                         has_today_data = True
-                    else:
-                        print(f"  × No data for today in {table_pattern}")
-                    
-                    table_count += 1
-                    final_table_count = table_count - 1
-                except Exception as e:
-                    # No more tables exist
-                    break
-            
-            if has_today_data:
-                return load_data_from_mysql(entity_config, final_table_count)
-            
-            print(f"\nNo data found for today, proceeding with data collection")
-            
-            # Create tables if they don't exist
-            html_content = create_tables_if_not_exist(entity_config)
-            if not html_content:
-                return None
+                        print(f"Found today's data in {table_name}")
+                        break
                 
-            # Process and save new data
-            holdings_data, total_value = extract_holdings_and_value(html_content)
-            if not holdings_data:
-                print("Unable to extract holdings data")
-                return None
-            print(f"Successfully extracted data for {len(holdings_data)} assets")
-
-            save_data_to_mysql(entity_config, holdings_data, total_value)
-            print("Data saving process completed")
+                if not has_today_data:
+                    print("No data for today, fetching new data")
+                    html_content = fetch_data_with_firefox(entity_config['url'])
+                    if not html_content:
+                        return None
+                    
+                    holdings_data = extract_holdings_and_value(html_content)
+                    if not holdings_data:
+                        print("Unable to extract holdings data")
+                        return None
+                    
+                    save_data_to_mysql(entity_config, holdings_data, 
+                                     existing_tables, table_columns)
+                else:
+                    print("Today's data already exists")
             
-            # Return the newly saved data with the final table count
-            return load_data_from_mysql(entity_config, final_table_count)
+            return load_data_from_mysql(entity_config)
             
     except Exception as e:
-        print(f"Error checking existing data: {e}")
+        print(f"Error in get_entity_data: {e}")
+        return None
     finally:
         connection.close()
 
 def format_insights_message(all_insights):
     """Format insights into a readable message."""
-    message = "🐋 *WHALE TRACKER*\n\n"
+    message = "🐋 *WHALE TRACKER (holding changes)*\n\n"
     no_changes_by_category = {}
     
     for category, entities in ENTITIES.items():
@@ -872,6 +927,7 @@ def format_insights_message(all_insights):
         category_message = f"*{category}*\n"
         temp_message = ""
         category_no_changes = []
+        
         for entity_name, entity_config in entities.items():
             if category not in all_insights or entity_name not in all_insights[category]:
                 category_no_changes.append(entity_config['title'])
@@ -925,6 +981,19 @@ def get_entities():
         )
         print("Docker container started")
         
+        connection = connect_to_database()
+        if not connection:
+            return "Error connecting to database"
+            
+        try:
+            with connection.cursor() as cursor:
+                # First check for any overlaps
+                for category, entities in ENTITIES.items():
+                    for entity_name, entity_config in entities.items():
+                        check_column_overlaps(cursor, entity_config)
+        finally:
+            connection.close()
+        
         # Process all entities
         for category, entities in ENTITIES.items():
             category_insights = {}
@@ -951,7 +1020,6 @@ def get_entities():
         
         # Format and return the final message
         if all_insights:
-            print(format_insights_message(all_insights))
             return format_insights_message(all_insights)
         else:
             return "No insights generated for any entity"
