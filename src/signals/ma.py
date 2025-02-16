@@ -6,7 +6,7 @@ import json
 import ccxt
 from utils import send_message
 from dotenv import load_dotenv
-
+import asyncio
 
 # Load environment variables
 load_dotenv()
@@ -111,4 +111,4 @@ async def main():
         print(f"Error processing data: {e}")
 
 if __name__ == "__main__":
-    main() 
+    asyncio.run(main()) 
