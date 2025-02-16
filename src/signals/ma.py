@@ -50,12 +50,13 @@ async def main():
         if current_price >= upper_band:
             
             message = (
-                f"🔝 *{data['symbol']}: Market Top Signal*\n"
-                f"Current Price ${current_price:.2f} has crossed above the Upper Band ${upper_band:.2f}\n"
-                f"Price is {((current_price - upper_band) / upper_band * 100):.1f}% above the Upper Band\n"
-                f"\n*Trading Opportunity:*"
-                f"\nConsider taking profits at these elevated levels"
-                f"\nMarket may be overextended \\- Risk of reversal increased"
+                f"🔝 *{data['symbol']}: Market Top Signal*\n\n"
+                f"• Current Price: ${current_price:.2f}\n"
+                f"• Upper Band: ${upper_band:.2f}\n"
+                f"• Deviation: +{((current_price - upper_band) / upper_band * 100):.1f}%\n\n"
+                f"*Analysis:*\n"
+                f"Consider taking profits at these elevated levels\n"
+                f"Market may be overextended \\- Risk of reversal increased"
             )
             print("\nSignal Generated:")
             print(message)
