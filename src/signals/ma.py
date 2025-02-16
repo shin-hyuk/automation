@@ -83,8 +83,13 @@ def analyze_signal(data, current_price):
 
 async def main():
     try:
-        # Read input from stdin
-        input_data = sys.stdin.read().strip()
+        # Check if input data is provided
+        if len(sys.argv) < 2:
+            print("Error: No input data provided")
+            sys.exit(1)
+            
+        # Read input from command line argument
+        input_data = sys.argv[1]
         data = json.loads(input_data)
         
         # Convert BTCUSD to BTC/USDT for Binance
@@ -109,6 +114,7 @@ async def main():
             
     except Exception as e:
         print(f"Error processing data: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     asyncio.run(main()) 
