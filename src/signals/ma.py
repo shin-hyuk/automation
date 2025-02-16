@@ -34,8 +34,6 @@ async def main():
         # Get Upper Band and trend values
         upper_band = float(data['Upper'])
         upper_band = 97200
-        st_trend = float(data['ST_trend'])
-        lt_trend = float(data['LT_trend'])
         
         # Get current price from Binance
         current_price = get_binance_price("BTC/USDT")
@@ -50,15 +48,14 @@ async def main():
         
         # Check if price crosses Upper Band
         if current_price >= upper_band:
-            # Calculate how far price is above moving averages
-            st_diff = ((current_price - st_trend) / st_trend) * 100
-            lt_diff = ((current_price - lt_trend) / lt_trend) * 100
             
             message = (
-                f"*{data['symbol']}: Market Top Signal*\n"
-                f"Price is {st_diff:.2f}% above short-term MA\n"
-                f"Price is {lt_diff:.2f}% above long-term MA\n"
-                f"Recommended Action: Consider Taking Profits"
+                f"🔝 *{data['symbol']}: Market Top Signal*\n"
+                f"Current Price ${current_price:,.2f} has crossed above the Upper Band ${upper_band:,.2f}\n"
+                f"Price is {((current_price - upper_band) / upper_band * 100):.1f}% above the Upper Band\n"
+                f"\n*Trading Opportunity:"
+                f"\nConsider taking profits at these elevated levels"
+                f"\nMarket may be overextended - Risk of reversal increased"
             )
             print("\nSignal Generated:")
             print(message)
