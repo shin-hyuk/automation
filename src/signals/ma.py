@@ -42,8 +42,10 @@ async def main():
             print("Error: Could not fetch current price")
             sys.exit(1)
             
-        print(f"Upper Band: {upper_band}")
-        print(f"Current Price: {current_price}")
+        print(f"Debug Info:")
+        print(f"Upper Band: {upper_band:,.2f}")
+        print(f"Real-time Price: {current_price:,.2f}")
+        print(f"Distance from Upper Band: {((upper_band - current_price) / current_price) * 100:.2f}%")
         
         # Check if price crosses Upper Band
         if current_price >= upper_band:
