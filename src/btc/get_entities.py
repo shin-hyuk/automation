@@ -739,9 +739,9 @@ def get_max_changes(df, columns):
         # Calculate absolute change
         today_value = df[max_increase[0]].iloc[-1]
         yesterday_value = df[max_increase[0]].iloc[-2]
-        abs_change = today_value - yesterday_value
+        abs_change = int(today_value - yesterday_value)
         messages.append(
-            f"{max_increase[0]} +{int(abs_change)} (*{max_increase[1]:+.2f}%*)"
+            f"{max_increase[0]} +{format(abs_change, ',')} (*{max_increase[1]:+.2f}%*)"
         )
         
     if max_decrease[0] and max_decrease[1] < 0:
@@ -749,9 +749,9 @@ def get_max_changes(df, columns):
         # Calculate absolute change
         today_value = df[max_decrease[0]].iloc[-1]
         yesterday_value = df[max_decrease[0]].iloc[-2]
-        abs_change = today_value - yesterday_value
+        abs_change = int(today_value - yesterday_value)
         messages.append(
-            f"{max_decrease[0]} {int(abs_change):+} (*{max_decrease[1]:+.2f}%*)"
+            f"{max_decrease[0]} {format(abs_change, ',')} (*{max_decrease[1]:+.2f}%*)"
         )
     
     return assets, messages
