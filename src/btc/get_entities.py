@@ -801,8 +801,7 @@ def get_entity_data(entity_config):
                     WHERE date = %s
                 """, (today_date,))
                 result = cursor.fetchone()
-
-                if result:
+                if result and result[0] > 0:
                     print(f"  ✓ Found today's data in {entity_config['table']}")
                     has_today_data = True
                 else:
