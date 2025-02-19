@@ -292,69 +292,19 @@ def create_tables_if_not_exist(entity_config, html_content=None):
 
 # **📌 Fetch Data with Selenium**
 def fetch_data_with_firefox(url):
-    """Fetch data using Selenium in Docker container."""
-    container_name = "selenium-firefox"
-    image_name = "selenium/standalone-firefox"
-    max_retries = 10
-    success = False
-    retries = 0
+    """Fetch data using existing Selenium WebDriver."""
     driver = None
-
     try:
-        # Clean up any existing container first
-        client = docker.from_env()
-        try:
-            container = client.containers.get(container_name)
-            print(f"Found existing container {container_name}, removing it...")
-            container.stop()
-            container.remove()
-        except docker.errors.NotFound:
-            print(f"No existing container {container_name} found")
-
-        # Start Docker container
-        print(f"Starting new {container_name} container...")
-        client.containers.run(
-            image_name,
-            name=container_name,
-            ports={"4444/tcp": 4444},
-            detach=True,
+        driver = webdriver.Remote(
+            command_executor="http://localhost:4444/wd/hub",
+            options=webdriver.FirefoxOptions()
         )
-        print("Docker container started")
-
-        while not success and retries < max_retries:
-            try:
-                options = webdriver.FirefoxOptions()
-                options.add_argument(f"user-agent={random.choice(USER_AGENTS)}")
-                options.add_argument("--headless")
-                
-                driver = webdriver.Remote(
-                    command_executor="http://localhost:4444/wd/hub",
-                    options=options
-                )
-                success = True
-            except Exception as e:
-                print(f"Error initializing WebDriver: {e}")
-                retries += 1
-                sleep_time = random.randint(1, 10)
-                print(f"Attempt {retries}/{max_retries}")
-                time.sleep(sleep_time)
-
-        if not success:
-            return None
-
-        print("Launching Firefox Browser...")
+        print(f"Loading page: {url}")
         driver.get(url)
-
-        WebDriverWait(driver, 15).until(
-            EC.presence_of_element_located((By.CLASS_NAME, "Portfolio_holdingsContainer__XyaUq"))
-        )
-        time.sleep(5)
-
-        print("Page Loaded. Extracting content...")
+        time.sleep(5)  # Give page time to load
         return driver.page_source
-
     except Exception as e:
-        print(f"Firefox Error: {e}")
+        print(f"Error fetching data: {e}")
         return None
     finally:
         if driver:
@@ -917,11 +867,139 @@ def get_entity_data(entity_config):
     finally:
         connection.close()
 
-def format_insights_message(all_insights):
+
+def parse_trade_volume(volume_str):
+    """Convert trade volume string to numeric value"""
+    try:
+        # Remove $ and commas
+        clean_str = volume_str.replace('$', '').replace(',', '')
+        
+        # Handle different suffixes
+        if 'B' in clean_str:
+            return float(clean_str.replace('B', '')) * 1_000_000_000
+        elif 'M' in clean_str:
+            return float(clean_str.replace('M', '')) * 1_000_000
+        elif 'K' in clean_str:
+            return float(clean_str.replace('K', '')) * 1_000
+        else:
+            return float(clean_str)
+    except:
+        return 0
+    
+def format_name(raw_name):
+    """Clean up politician name by removing whitespace and newlines."""
+    return raw_name.strip().replace('\n', '').strip()
+
+def format_link(relative_link):
+    """Convert relative link to full Quiver Quant URL."""
+    base_url = "https://www.quiverquant.com"
+    # Remove '../' from the start of relative link
+    clean_link = relative_link.replace('../', '')
+    # Convert special characters for URL
+    formatted_link = clean_link.replace(' ', '%20')
+    return f"{base_url}/{formatted_link}"
+
+def get_congress_trades():
+    """Get congressional trade insights."""
+    MIN_TRADE_VOLUME = 10_000_000  # $10M minimum
+    
+    try:
+        html_content = fetch_data_with_firefox('https://www.quiverquant.com/congresstrading/')
+        if not html_content:
+            print("Could not fetch Quiver Quant data")
+            return None
+            
+        soup = BeautifulSoup(html_content, "html.parser")
+        congress_insights = {"Congress": {}}
+        
+        # Find all table-outer divs
+        table_outers = soup.find_all("div", class_="table-outer")
+        if len(table_outers) < 2:
+            print("Could not find trades table")
+            return None
+            
+        # Process trade rows from second table
+        trade_rows = table_outers[1].find_all("tr")
+        trade_links = []
+        
+        for row in trade_rows:
+            try:
+                tds = row.find_all("td")
+                if len(tds) >= 3:
+                    volume_str = tds[2].text
+                    volume = parse_trade_volume(volume_str)
+                    
+                    if volume >= MIN_TRADE_VOLUME:
+                        relative_link = tds[0].find("a")['href']
+                        raw_name = tds[0].find("strong").text
+                        trade_links.append({
+                            'link': format_link(relative_link),
+                            'volume': volume,
+                            'name': format_name(raw_name)
+                        })
+            except Exception as e:
+                print(f"Error processing row: {e}")
+                continue
+        
+        trade_links.sort(key=lambda x: x['volume'], reverse=True)
+        
+        # Process top 10 trades
+        for trade_info in trade_links[:10]:
+            html_content = fetch_data_with_firefox(trade_info['link'])
+            if not html_content:
+                continue
+                
+            soup = BeautifulSoup(html_content, "html.parser")
+            trade_table = soup.find("table", {"id": "tradeTable"})
+            if not trade_table:
+                continue
+                
+            trade_rows = trade_table.find_all("tr")[1:]  # Skip header
+            link_most_recent_date = None
+            trader_trades = {'Buy': [], 'Sell': []}
+            
+            for row in trade_rows:
+                tds = row.find_all("td")
+                try:
+                    symbol = tds[0].find("div").find("a", class_="positive").text
+                    current_date = tds[3].find("strong").text.split(',')[0].strip()
+                    
+                    if link_most_recent_date is None:
+                        link_most_recent_date = current_date
+                    elif current_date < link_most_recent_date:
+                        break
+                    
+                    trade_type = "Buy" if tds[1].find("strong").text == "Purchase" else "Sell"
+                    trader_trades[trade_type].append(symbol)
+                    
+                except Exception as e:
+                    print(f"Error processing trade row: {e}")
+            
+            if trader_trades['Buy'] or trader_trades['Sell']:
+                trader_insights = []
+                if trader_trades['Buy']:
+                    trader_insights.append(f"Buy {', '.join(sorted(set(trader_trades['Buy'])))}")
+                if trader_trades['Sell']:
+                    trader_insights.append(f"Sell {', '.join(sorted(set(trader_trades['Sell'])))}")
+                
+                # Add name with date
+                name_with_date = f"{trade_info['name']} ({link_most_recent_date})"
+                congress_insights["Congress"][name_with_date] = trader_insights
+            
+            time.sleep(random.uniform(1, 2))
+        
+        return congress_insights
+            
+    except Exception as e:
+        print(f"Error in get_congress_trades: {e}")
+        return None
+
+def format_insights_message(insights):
     """Format insights into a readable message."""
     message = "🐋 *WHALE TRACKER (holding changes)*\n\n"
     no_changes_by_category = {}
     
+    # Process entity insights
     for category, entities in ENTITIES.items():
         has_insights = False
         category_message = f"*{category}*\n"
@@ -929,17 +1007,30 @@ def format_insights_message(all_insights):
         category_no_changes = []
         
         for entity_name, entity_config in entities.items():
-            if category not in all_insights or entity_name not in all_insights[category]:
+            if not insights or category not in insights or entity_name not in insights[category]:
                 category_no_changes.append(entity_config['title'])
             else:
                 has_insights = True
-                changes = all_insights[category][entity_name]
+                changes = insights[category][entity_name]
                 temp_message += f"│   {entity_config['title']}\n"
                 for change in changes:
                     temp_message += f"│   └── {change}\n"
         
         if has_insights:
             message += category_message + temp_message
+            # Add congress trades after Companies section
+            if category == "Companies" and "Congress" in insights:
+                message += "\n*Active Congressional Traders* (last trades)\n"
+                for trader, trades in insights["Congress"].items():
+                    message += f"│   {trader}\n"
+                    for trade in trades:
+                        message += f"│   └── {trade}\n"
+                message += "\n"
+            elif category == "Companies":
+                if "Congress" not in no_changes_by_category:
+                    no_changes_by_category["Congress"] = []
+                no_changes_by_category["Congress"].append("No recent high-volume trades")
+            
             if category != list(ENTITIES.keys())[-1]:
                 message += "\n"
 
@@ -947,7 +1038,7 @@ def format_insights_message(all_insights):
             no_changes_by_category[category] = category_no_changes
     
     if no_changes_by_category:
-        message += "\n*Entities with No Portfolio Changes*\n"
+        message += "*Entities with No Portfolio Changes*\n"
         for category, entities in no_changes_by_category.items():
             message += f"│   {category}: {', '.join(entities)}\n"
     
@@ -958,29 +1049,6 @@ def get_entities():
     all_insights = {}
     
     try:
-        # Start Docker container at beginning
-        client = docker.from_env()
-        container_name = "selenium-firefox"
-        
-        # Clean up any existing container first
-        try:
-            container = client.containers.get(container_name)
-            print(f"Found existing container {container_name}, removing it...")
-            container.stop()
-            container.remove()
-        except docker.errors.NotFound:
-            print(f"No existing container {container_name} found")
-
-        # Start new container
-        print(f"Starting new {container_name} container...")
-        client.containers.run(
-            "selenium/standalone-firefox",
-            name=container_name,
-            ports={"4444/tcp": 4444},
-            detach=True,
-        )
-        print("Docker container started")
-        
         connection = connect_to_database()
         if not connection:
             return "Error connecting to database"
@@ -1018,17 +1086,57 @@ def get_entities():
             if category_insights:
                 all_insights[category] = category_insights
         
+        return all_insights if all_insights else None
+        
+    except Exception as e:
+        print(f"Error in get_entities: {e}")
+        return None
+
+def get_whales():
+    """Main function to run whale tracker with Docker lifecycle management."""
+    try:
+        # Start Docker container
+        client = docker.from_env()
+        container_name = "selenium-firefox"
+        
+        # Clean up any existing container
+        try:
+            container = client.containers.get(container_name)
+            print(f"Found existing container {container_name}, removing it...")
+            container.stop()
+            container.remove()
+        except docker.errors.NotFound:
+            print(f"No existing container {container_name} found")
+
+        # Start new container
+        print(f"Starting new {container_name} container...")
+        client.containers.run(
+            "selenium/standalone-firefox",
+            name=container_name,
+            ports={"4444/tcp": 4444},
+            detach=True,
+        )
+        print("Docker container started")
+        time.sleep(3)  # Give container time to fully start
+        
+        # Get insights from both sources
+        entity_insights = get_entities()
+        congress_insights = get_congress_trades()
+        
         # Format and return the final message
-        if all_insights:
+        if entity_insights or congress_insights:
+            all_insights = entity_insights or {}
+            if congress_insights:
+                all_insights.update(congress_insights)
             return format_insights_message(all_insights)
         else:
-            return "No insights generated for any entity"
-        
+            return "No insights generated"
+            
     except Exception as e:
         print(f"\nError in main process: {e}")
         return f"Error processing entities: {str(e)}"
     finally:
-        # Clean up Docker container at the end
+        # Clean up Docker container
         try:
             container = client.containers.get(container_name)
             print(f"\nStopping and removing {container_name} container...")
@@ -1041,8 +1149,7 @@ def get_entities():
             print(f"Error cleaning up container: {e}")
 
 if __name__ == "__main__":
-    msg = get_entities()
-
+    msg = get_whales()
     if msg:
         print("\nFinal message:")
         print(msg)
