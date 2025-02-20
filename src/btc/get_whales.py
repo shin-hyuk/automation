@@ -10,6 +10,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.firefox import GeckoDriverManager
 from dotenv import load_dotenv
+import requests
 import os
 import docker
 from time import sleep
@@ -24,6 +25,8 @@ DB_USER = os.getenv('DB_USER')
 DB_PASSWORD = os.getenv('DB_PASSWORD')
 DB_NAME = os.getenv('DB_NAME')
 DB_PORT = int(os.getenv('DB_PORT', 3306))
+
+TOP_MARKET_SYMBOLS = None
 
 # Base URL for all entities
 BASE_URL = "https://intel.arkm.com/explorer/entity/"
@@ -560,17 +563,48 @@ def calculate_changes(new_data, old_data):
 
     return daily_changes, monthly_changes
 
-
+def get_top_market_dominance(limit: int = 20):
+    """Initialize global TOP_MARKET_SYMBOLS if not already set."""
+    global TOP_MARKET_SYMBOLS
+    
+    if TOP_MARKET_SYMBOLS is not None:
+        return TOP_MARKET_SYMBOLS
+        
+    url = "https://api.coingecko.com/api/v3/coins/markets"
+    params = {
+        "vs_currency": "usd",
+        "order": "market_cap_desc",
+        "per_page": limit,
+        "page": 1,
+        "sparkline": False
+    }
+    
+    try:
+        response = requests.get(url, params=params)
+        response.raise_for_status()
+        data = response.json()
+        TOP_MARKET_SYMBOLS = [coin["symbol"].upper() for coin in data]
+        return TOP_MARKET_SYMBOLS
+    
+    except requests.RequestException as e:
+        print(f"Error fetching data from CoinGecko: {e}")
+        return None
+    
 def get_streaks(df, columns):
     """Find the longest buying/selling streaks."""
     if len(df) < 2:  # Need at least today and yesterday
         return [], []
         
     streaks = {}
+    buying_assets = []
+    selling_assets = []
     for column in columns:
         if column not in df.columns:
             continue
-            
+
+        if column not in TOP_MARKET_SYMBOLS:
+            continue
+
         # Convert column to float type before diff
         df[column] = df[column].astype(float)
         changes = df[column].diff().iloc[1:]  # Skip first NaN from diff()
@@ -579,7 +613,7 @@ def get_streaks(df, columns):
         streak_count = 0
         for change in changes[::-1]:
             if pd.isna(change):  # Skip NaN values
-                continue
+                break
                 
             if change > 0:
                 if direction == "buying" or direction is None:
@@ -596,27 +630,27 @@ def get_streaks(df, columns):
             else:
                 break
                 
-        if streak_count > 1: 
+        if streak_count > 1:
+            if direction == "buying":
+                buying_assets.append(column)
+            else:
+                selling_assets.append(column)
             streaks[column] = (direction, streak_count)
 
     if not streaks:
         return [], []
         
-    # Group assets by direction and streak count
-    max_streak = max(streak[1] for streak in streaks.values())
-    buying_assets = [asset for asset, (dir, count) in streaks.items() 
-                    if count == max_streak and dir == "buying"]
-    selling_assets = [asset for asset, (dir, count) in streaks.items() 
-                     if count == max_streak and dir == "selling"]
+    # Get the streak count (assuming all assets have same streak length)
+    streak_count = next(iter(streaks.values()))[1] if streaks else 0
     
-    # Create simplified messages
+    # Create messages
     messages = []
-    for asset in buying_assets:
-        messages.append(f"{asset} buying for *{max_streak} days straight*")
-    for asset in selling_assets:
-        messages.append(f"{asset} selling for *{max_streak} days straight*")
+    if buying_assets:
+        messages.append(f"{', '.join(sorted(buying_assets))} buying for {streak_count} days")
+    if selling_assets:
+        messages.append(f"{', '.join(sorted(selling_assets))} selling for {streak_count} days")
     
-    return buying_assets + selling_assets, messages
+    return list(streaks.keys()), messages
 
 def get_reversal(df, columns):
     """Find buying to selling and selling to buying reversals."""
@@ -628,14 +662,18 @@ def get_reversal(df, columns):
     for column in columns:
         if column not in df.columns:
             continue
+
+        if column not in TOP_MARKET_SYMBOLS:
+            continue
+        df[column] = df[column].astype(float)
         changes = df[column].diff().iloc[1:]
         today_change = changes.iloc[-1]
-        
+
         # Count the streak before the reversal
         streak_count = 0
         prev_direction = None
-        for change in changes.iloc[::-1]:
-            if change == 0:
+        for change in changes.iloc[::-1][1:]:
+            if pd.isna(change) or change == 0:  # Skip NaN values and zero changes
                 break
             if prev_direction is None:
                 prev_direction = "selling" if change < 0 else "buying"
@@ -646,15 +684,14 @@ def get_reversal(df, columns):
                 break
                 
         # Check if today reversed the streak
-        if streak_count >= 1:
+        if streak_count > 1:
             if (today_change > 0 and prev_direction == "selling") or (today_change < 0 and prev_direction == "buying"):
                 direction = "buying" if today_change > 0 else "selling"
                 
                 assets.append(column)
                 messages.append(
                     f"Position in {column} shifted to {direction} after {prev_direction} streak of {streak_count} days"
-                )
-    
+                )    
     return assets, messages
 
 def get_max_changes(df, columns):
@@ -671,13 +708,14 @@ def get_max_changes(df, columns):
         if column not in df.columns:
             continue
             
+        df[column] = df[column].astype(float)
         today_value = df[column].iloc[-1]
         yesterday_value = df[column].iloc[-2]
         
-        if yesterday_value == 0:
+        if pd.isna(today_value) or pd.isna(yesterday_value):
             continue
             
-        pct_change = ((today_value - yesterday_value) / yesterday_value) * 100
+        pct_change = 0 if yesterday_value == 0 else ((today_value - yesterday_value) / yesterday_value) * 100
         
         if pct_change > max_increase[1]:
             max_increase = (column, pct_change)
@@ -689,9 +727,10 @@ def get_max_changes(df, columns):
         # Calculate absolute change
         today_value = df[max_increase[0]].iloc[-1]
         yesterday_value = df[max_increase[0]].iloc[-2]
-        abs_change = int(today_value - yesterday_value)
+        abs_change = today_value - yesterday_value
+        formatted_change = f"{abs_change:.2f}" if abs(abs_change) < 1 else format(int(abs_change), ',')
         messages.append(
-            f"{max_increase[0]} +{format(abs_change, ',')} (*{max_increase[1]:+.2f}%*)"
+            f"{max_increase[0]} +{formatted_change} (*{max_increase[1]:+.2f}%*)"
         )
         
     if max_decrease[0] and max_decrease[1] < 0:
@@ -699,9 +738,10 @@ def get_max_changes(df, columns):
         # Calculate absolute change
         today_value = df[max_decrease[0]].iloc[-1]
         yesterday_value = df[max_decrease[0]].iloc[-2]
-        abs_change = int(today_value - yesterday_value)
+        abs_change = today_value - yesterday_value
+        formatted_change = f"{abs_change:.2f}" if abs(abs_change) < 1 else format(int(abs_change), ',')
         messages.append(
-            f"{max_decrease[0]} {format(abs_change, ',')} (*{max_decrease[1]:+.2f}%*)"
+            f"{max_decrease[0]} {formatted_change} (*{max_decrease[1]:+.2f}%*)"
         )
     
     return assets, messages
@@ -719,7 +759,6 @@ def get_insight(df, display_columns=None):
     streak_assets, streak_msgs = get_streaks(df, display_columns)
     reversal_assets, reversal_msgs = get_reversal(df, display_columns)
     change_assets, change_msgs = get_max_changes(df, display_columns)
-    
     # Add messages in specific order:
     # 1. Changes (increases/decreases)
     # 2. Streaks
@@ -1119,6 +1158,7 @@ def get_whales():
         print("Docker container started")
         time.sleep(3)  # Give container time to fully start
         
+        get_top_market_dominance(limit=20)
         # Get insights from both sources
         entity_insights = get_entities()
         congress_insights = get_congress_trades()
