@@ -1,5 +1,7 @@
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).parent.parent))
 import time
-import random
 import pymysql
 from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
@@ -10,12 +12,12 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.firefox import GeckoDriverManager
 from dotenv import load_dotenv
-import requests
 import os
 import docker
 from time import sleep
 import pandas as pd
 import ccxt
+from btc import get_congress
 
 # Load environment variables
 load_dotenv()
@@ -857,14 +859,7 @@ def format_insights_message(insights):
             if category != list(ENTITIES.keys())[-1]:
                 message += "\n"
 
-        if category_no_changes:
-            no_changes_by_category[category] = category_no_changes
-    
-    if no_changes_by_category:
-        message += "\n*Entities with No Portfolio Changes*\n"
-        for category, entities in no_changes_by_category.items():
-            message += f"│   {category}: {', '.join(entities)}\n"
-    
+    message += "\n" +get_congress()
     return message
 
 def get_entities():
