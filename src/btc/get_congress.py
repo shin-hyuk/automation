@@ -127,8 +127,8 @@ def get_congress_trades():
         
         # Process trades for both categories
         for category, trades, category_name in [
-            (congress_insights["High Volume Congress ($10M+)"], high_volume_trades, "high"),
-            (congress_insights["Medium Volume Congress ($1M-$10M)"], med_volume_trades, "medium")
+            (congress_insights["High Volume ($10M+)"], high_volume_trades, "high"),
+            (congress_insights["Medium Volume ($1M-$10M)"], med_volume_trades, "medium")
         ]:
             for trade_info in trades:
                 html_content = fetch_data_with_firefox(trade_info['link'])
