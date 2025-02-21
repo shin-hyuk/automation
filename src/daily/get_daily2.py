@@ -4,6 +4,7 @@ def get_daily2():
     print("\nGenerating daily report (part 2)...")
     try:
         msg = btc.get_whales()
+        msg += "\n" + btc.get_congress()
         print("Daily report (part 2) completed\n")
         return msg
         

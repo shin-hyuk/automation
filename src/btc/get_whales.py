@@ -856,7 +856,6 @@ def format_insights_message(insights):
             if category != list(ENTITIES.keys())[-1]:
                 message += "\n"
 
-    message += "\n" + get_congress()
     return message
 
 def get_entities():
