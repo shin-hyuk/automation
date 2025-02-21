@@ -14,7 +14,6 @@ import docker
 from time import sleep
 import pandas as pd
 import ccxt
-from btc import get_congress
 
 # Load environment variables
 load_dotenv()
