@@ -6,7 +6,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 from dotenv import load_dotenv
 from datetime import datetime
 from utils import send_message
-from daily import get_daily1, get_daily2
+from daily import get_daily1, get_daily2, get_daily3
 
 # Load environment variables
 load_dotenv()
@@ -26,7 +26,12 @@ async def send_daily():
         await send_message(msg, chat_ids=TRADE_CHAT_IDS)
         print("Daily message 2 sent successfully")
 
+        msg = get_daily3()
+        await send_message(msg, chat_ids=TRADE_CHAT_IDS)
+        print("Daily message 3 sent successfully")
+
         print("All daily workflows completed.")
+
     except Exception as e:
         error_msg = f"Error in daily workflow: {str(e)}"
         print(error_msg)

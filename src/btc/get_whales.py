@@ -15,6 +15,7 @@ import os
 import docker
 from time import sleep
 import pandas as pd
+import ccxt
 
 # Load environment variables
 load_dotenv()
@@ -26,7 +27,7 @@ DB_PASSWORD = os.getenv('DB_PASSWORD')
 DB_NAME = os.getenv('DB_NAME')
 DB_PORT = int(os.getenv('DB_PORT', 3306))
 
-TOP_MARKET_SYMBOLS = None
+TOP_MARKET_SYMBOLS = ['BTC', 'ETH', 'XRP', 'BNB', 'SOL'] #USDT, USDC, WETH
 
 # Base URL for all entities
 BASE_URL = "https://intel.arkm.com/explorer/entity/"
@@ -563,149 +564,43 @@ def calculate_changes(new_data, old_data):
 
     return daily_changes, monthly_changes
 
-def get_top_market_dominance(limit: int = 20):
-    """Initialize global TOP_MARKET_SYMBOLS if not already set."""
-    global TOP_MARKET_SYMBOLS
-    
-    if TOP_MARKET_SYMBOLS is not None:
-        return TOP_MARKET_SYMBOLS
-        
-    url = "https://api.coingecko.com/api/v3/coins/markets"
-    params = {
-        "vs_currency": "usd",
-        "order": "market_cap_desc",
-        "per_page": limit,
-        "page": 1,
-        "sparkline": False
-    }
-    
-    try:
-        response = requests.get(url, params=params)
-        response.raise_for_status()
-        data = response.json()
-        TOP_MARKET_SYMBOLS = [coin["symbol"].upper() for coin in data]
-        return TOP_MARKET_SYMBOLS
-    
-    except requests.RequestException as e:
-        print(f"Error fetching data from CoinGecko: {e}")
-        return None
-    
-def get_streaks(df, columns):
-    """Find the longest buying/selling streaks."""
-    if len(df) < 2:  # Need at least today and yesterday
-        return [], []
-        
-    streaks = {}
-    buying_assets = []
-    selling_assets = []
-    for column in columns:
-        if column not in df.columns:
-            continue
-
-        if column not in TOP_MARKET_SYMBOLS:
-            continue
-
-        # Convert column to float type before diff
-        df[column] = df[column].astype(float)
-        changes = df[column].diff().iloc[1:]  # Skip first NaN from diff()
-        
-        direction = None
-        streak_count = 0
-        for change in changes[::-1]:
-            if pd.isna(change):  # Skip NaN values
-                break
-                
-            if change > 0:
-                if direction == "buying" or direction is None:
-                    direction = "buying"
-                    streak_count += 1
-                else:
-                    break
-            elif change < 0:
-                if direction == "selling" or direction is None:
-                    direction = "selling"
-                    streak_count += 1
-                else:
-                    break
-            else:
-                break
-                
-        if streak_count > 1:
-            if direction == "buying":
-                buying_assets.append(column)
-            else:
-                selling_assets.append(column)
-            streaks[column] = (direction, streak_count)
-
-    if not streaks:
-        return [], []
-        
-    # Get the streak count (assuming all assets have same streak length)
-    streak_count = next(iter(streaks.values()))[1] if streaks else 0
-    
-    # Create messages
-    messages = []
-    if buying_assets:
-        messages.append(f"{', '.join(sorted(buying_assets))} buying for {streak_count} days")
-    if selling_assets:
-        messages.append(f"{', '.join(sorted(selling_assets))} selling for {streak_count} days")
-    
-    return list(streaks.keys()), messages
-
-def get_reversal(df, columns):
-    """Find buying to selling and selling to buying reversals."""
-    if len(df) < 3:  # Need at least 3 days to detect reversal
-        return [], []
-        
-    assets = []
-    messages = []
-    for column in columns:
-        if column not in df.columns:
-            continue
-
-        if column not in TOP_MARKET_SYMBOLS:
-            continue
-        df[column] = df[column].astype(float)
-        changes = df[column].diff().iloc[1:]
-        today_change = changes.iloc[-1]
-
-        # Count the streak before the reversal
-        streak_count = 0
-        prev_direction = None
-        for change in changes.iloc[::-1][1:]:
-            if pd.isna(change) or change == 0:  # Skip NaN values and zero changes
-                break
-            if prev_direction is None:
-                prev_direction = "selling" if change < 0 else "buying"
-                streak_count = 1
-            elif (change < 0 and prev_direction == "selling") or (change > 0 and prev_direction == "buying"):
-                streak_count += 1
-            else:
-                break
-                
-        # Check if today reversed the streak
-        if streak_count > 1:
-            if (today_change > 0 and prev_direction == "selling") or (today_change < 0 and prev_direction == "buying"):
-                direction = "buying" if today_change > 0 else "selling"
-                
-                assets.append(column)
-                messages.append(
-                    f"Position in {column} shifted to {direction} after {prev_direction} streak of {streak_count} days"
-                )    
-    return assets, messages
-
+ 
 def get_max_changes(df, columns):
-    """Find maximum percentage increases and decreases."""
+    """Find maximum absolute value changes with streak information."""
     if len(df) < 2:  # Need at least today and yesterday
+        return [], []
+        
+    try:
+        # Initialize Binance client
+        binance = ccxt.binance()
+        
+        # Get current prices for all symbols
+        prices = {}
+        for symbol in columns:
+            if symbol not in TOP_MARKET_SYMBOLS:
+                continue
+            try:
+                # Try to get USDT pair price
+                ticker = binance.fetch_ticker(f'{symbol}/USDT')
+                prices[symbol] = ticker['last']
+            except Exception as e:
+                print(f"Could not get price for {symbol}: {e}")
+                continue
+    except Exception as e:
+        print(f"Error initializing Binance client: {e}")
         return [], []
         
     assets = []
     messages = []
-    max_increase = (None, -float('inf'))
-    max_decrease = (None, float('inf'))
+    max_increase_value = (None, -float('inf'))  # (symbol, USD value)
+    max_decrease_value = (None, float('inf'))   # (symbol, USD value)
+    
+    # Track streaks for each asset
+    streaks = {}
+    changes = {}  # Store percentage changes for later use
     
     for column in columns:
-        if column not in df.columns:
+        if column not in df.columns or column not in TOP_MARKET_SYMBOLS or column not in prices:
             continue
             
         df[column] = df[column].astype(float)
@@ -715,36 +610,71 @@ def get_max_changes(df, columns):
         if pd.isna(today_value) or pd.isna(yesterday_value):
             continue
             
+        # Calculate daily change
+        abs_change = today_value - yesterday_value
+        usd_value = abs_change * prices[column]  # Convert to USD value
         pct_change = 0 if yesterday_value == 0 else ((today_value - yesterday_value) / yesterday_value) * 100
         
-        if pct_change > max_increase[1]:
-            max_increase = (column, pct_change)
-        if pct_change < max_decrease[1]:
-            max_decrease = (column, pct_change)
+        changes[column] = pct_change  # Store for later use
+        
+        # Track max changes based on USD value
+        if usd_value > 0 and usd_value > max_increase_value[1]:
+            max_increase_value = (column, usd_value, abs_change, pct_change)
+        if usd_value < 0 and usd_value < max_decrease_value[1]:
+            max_decrease_value = (column, usd_value, abs_change, pct_change)
+            
+        # Calculate streak and total streak change
+        streak_count = 1
+        streak_start_value = yesterday_value
+        
+        for value in df[column].iloc[-3::-1]:
+            if pd.isna(value):
+                break
+            change = 0 if value == 0 else (df[column].iloc[-1] - value) / value * 100
+            if (pct_change > 0 and change > 0) or (pct_change < 0 and change < 0):
+                streak_count += 1
+                streak_start_value = value
+            else:
+                break
+                
+        if streak_count > 1:
+            total_streak_change = ((today_value - streak_start_value) / streak_start_value) * 100
+            streaks[column] = (streak_count, total_streak_change)
     
-    if max_increase[0] and max_increase[1] > 0:
-        assets.append(max_increase[0])
-        # Calculate absolute change
-        today_value = df[max_increase[0]].iloc[-1]
-        yesterday_value = df[max_increase[0]].iloc[-2]
-        abs_change = today_value - yesterday_value
+    # Format messages with streak information
+    if max_increase_value[0]:  # Check if we found any increases
+        symbol, _, abs_change, pct_change = max_increase_value
+        assets.append(symbol)
         formatted_change = f"{abs_change:.2f}" if abs(abs_change) < 1 else format(int(abs_change), ',')
+        
+        # Add streak info only if total change is different from daily change
+        streak_info = ""
+        if symbol in streaks:
+            streak_count, total_change = streaks[symbol]
+            if abs(total_change - pct_change) > 0.01:  # Use small threshold for float comparison
+                streak_info = f" | {streak_count}d (*{total_change:+.2f}%*)"
+            
         messages.append(
-            f"{max_increase[0]} +{formatted_change} (*{max_increase[1]:+.2f}%*)"
+            f"{symbol} +{formatted_change} (*{pct_change:+.2f}%*){streak_info}"
         )
         
-    if max_decrease[0] and max_decrease[1] < 0:
-        assets.append(max_decrease[0])
-        # Calculate absolute change
-        today_value = df[max_decrease[0]].iloc[-1]
-        yesterday_value = df[max_decrease[0]].iloc[-2]
-        abs_change = today_value - yesterday_value
+    if max_decrease_value[0]:  # Check if we found any decreases
+        symbol, _, abs_change, pct_change = max_decrease_value
+        assets.append(symbol)
         formatted_change = f"{abs_change:.2f}" if abs(abs_change) < 1 else format(int(abs_change), ',')
+        
+        # Add streak info only if total change is different from daily change
+        streak_info = ""
+        if symbol in streaks:
+            streak_count, total_change = streaks[symbol]
+            if abs(total_change - pct_change) > 0.01:  # Use small threshold for float comparison
+                streak_info = f" | {streak_count}d (*{total_change:+.2f}%*)"
+            
         messages.append(
-            f"{max_decrease[0]} {formatted_change} (*{max_decrease[1]:+.2f}%*)"
+            f"{symbol} {formatted_change} (*{pct_change:+.2f}%*){streak_info}"
         )
     
-    return assets, messages
+    return list(set(assets)), messages
 
 def get_insight(df, display_columns=None):
     """Generate insights from the data."""
@@ -753,24 +683,17 @@ def get_insight(df, display_columns=None):
     
     # Use all columns except 'date', USDT and USDC if no display_columns provided
     if display_columns is None:
-        display_columns = [col for col in df.columns if col != 'date' and 'USDT' not in col and 'USDC' not in col]
+        display_columns = [col for col in df.columns if col != 'date']
     
     # Get all insights but keep them separate
-    streak_assets, streak_msgs = get_streaks(df, display_columns)
-    reversal_assets, reversal_msgs = get_reversal(df, display_columns)
     change_assets, change_msgs = get_max_changes(df, display_columns)
     # Add messages in specific order:
     # 1. Changes (increases/decreases)
-    # 2. Streaks
-    # 3. Reversals
+
     insights.extend(change_msgs)
-    insights.extend(streak_msgs)
-    insights.extend(reversal_msgs)
     
     # Collect unique assets for display
     display_assets.update(change_assets)
-    display_assets.update(streak_assets)
-    display_assets.update(reversal_assets)
     
     if not insights:
         return None, list(display_assets)
@@ -907,135 +830,9 @@ def get_entity_data(entity_config):
         connection.close()
 
 
-def parse_trade_volume(volume_str):
-    """Convert trade volume string to numeric value"""
-    try:
-        # Remove $ and commas
-        clean_str = volume_str.replace('$', '').replace(',', '')
-        
-        # Handle different suffixes
-        if 'B' in clean_str:
-            return float(clean_str.replace('B', '')) * 1_000_000_000
-        elif 'M' in clean_str:
-            return float(clean_str.replace('M', '')) * 1_000_000
-        elif 'K' in clean_str:
-            return float(clean_str.replace('K', '')) * 1_000
-        else:
-            return float(clean_str)
-    except:
-        return 0
-    
-def format_name(raw_name):
-    """Clean up politician name by removing whitespace and newlines."""
-    return raw_name.strip().replace('\n', '').strip()
-
-def format_link(relative_link):
-    """Convert relative link to full Quiver Quant URL."""
-    base_url = "https://www.quiverquant.com"
-    # Remove '../' from the start of relative link
-    clean_link = relative_link.replace('../', '')
-    # Convert special characters for URL
-    formatted_link = clean_link.replace(' ', '%20')
-    return f"{base_url}/{formatted_link}"
-
-def get_congress_trades():
-    """Get congressional trade insights."""
-    MIN_TRADE_VOLUME = 10_000_000  # $10M minimum
-    
-    try:
-        html_content = fetch_data_with_firefox('https://www.quiverquant.com/congresstrading/')
-        if not html_content:
-            print("Could not fetch Quiver Quant data")
-            return None
-            
-        soup = BeautifulSoup(html_content, "html.parser")
-        congress_insights = {"Congress": {}}
-        
-        # Find all table-outer divs
-        table_outers = soup.find_all("div", class_="table-outer")
-        if len(table_outers) < 2:
-            print("Could not find trades table")
-            return None
-            
-        # Process trade rows from second table
-        trade_rows = table_outers[1].find_all("tr")
-        trade_links = []
-        
-        for row in trade_rows:
-            try:
-                tds = row.find_all("td")
-                if len(tds) >= 3:
-                    volume_str = tds[2].text
-                    volume = parse_trade_volume(volume_str)
-                    
-                    if volume >= MIN_TRADE_VOLUME:
-                        relative_link = tds[0].find("a")['href']
-                        raw_name = tds[0].find("strong").text
-                        trade_links.append({
-                            'link': format_link(relative_link),
-                            'volume': volume,
-                            'name': format_name(raw_name)
-                        })
-            except Exception as e:
-                print(f"Error processing row: {e}")
-                continue
-        
-        trade_links.sort(key=lambda x: x['volume'], reverse=True)
-        
-        # Process top 10 trades
-        for trade_info in trade_links[:10]:
-            html_content = fetch_data_with_firefox(trade_info['link'])
-            if not html_content:
-                continue
-                
-            soup = BeautifulSoup(html_content, "html.parser")
-            trade_table = soup.find("table", {"id": "tradeTable"})
-            if not trade_table:
-                continue
-                
-            trade_rows = trade_table.find_all("tr")[1:]  # Skip header
-            link_most_recent_date = None
-            trader_trades = {'Buy': [], 'Sell': []}
-            
-            for row in trade_rows:
-                tds = row.find_all("td")
-                try:
-                    symbol = tds[0].find("div").find("a", class_="positive").text
-                    current_date = tds[3].find("strong").text.split(',')[0].strip()
-                    
-                    if link_most_recent_date is None:
-                        link_most_recent_date = current_date
-                    elif current_date < link_most_recent_date:
-                        break
-                    
-                    trade_type = "Buy" if tds[1].find("strong").text == "Purchase" else "Sell"
-                    trader_trades[trade_type].append(symbol)
-                    
-                except Exception as e:
-                    print(f"Error processing trade row: {e}")
-            
-            if trader_trades['Buy'] or trader_trades['Sell']:
-                trader_insights = []
-                if trader_trades['Buy']:
-                    trader_insights.append(f"Buy {', '.join(sorted(set(trader_trades['Buy'])))}")
-                if trader_trades['Sell']:
-                    trader_insights.append(f"Sell {', '.join(sorted(set(trader_trades['Sell'])))}")
-                
-                # Add name with date
-                name_with_date = f"{trade_info['name']} ({link_most_recent_date})"
-                congress_insights["Congress"][name_with_date] = trader_insights
-            
-            time.sleep(random.uniform(1, 2))
-        
-        return congress_insights
-            
-    except Exception as e:
-        print(f"Error in get_congress_trades: {e}")
-        return None
-
 def format_insights_message(insights):
     """Format insights into a readable message."""
-    message = "🐋 *WHALE TRACKER (holding changes)*\n\n"
+    message = "🐋 *WHALE TRACKER* (Holding Changes)\n\n"
     no_changes_by_category = {}
     
     # Process entity insights
@@ -1057,19 +854,6 @@ def format_insights_message(insights):
         
         if has_insights:
             message += category_message + temp_message
-            # Add congress trades after Companies section
-            if category == "Companies" and "Congress" in insights:
-                message += "\n*Active Congressional Traders* (last trades)\n"
-                for trader, trades in insights["Congress"].items():
-                    message += f"│   {trader}\n"
-                    for trade in trades:
-                        message += f"│   └── {trade}\n"
-                message += "\n"
-            elif category == "Companies":
-                if "Congress" not in no_changes_by_category:
-                    no_changes_by_category["Congress"] = []
-                no_changes_by_category["Congress"].append("No recent high-volume trades")
-            
             if category != list(ENTITIES.keys())[-1]:
                 message += "\n"
 
@@ -1077,7 +861,7 @@ def format_insights_message(insights):
             no_changes_by_category[category] = category_no_changes
     
     if no_changes_by_category:
-        message += "*Entities with No Portfolio Changes*\n"
+        message += "\n*Entities with No Portfolio Changes*\n"
         for category, entities in no_changes_by_category.items():
             message += f"│   {category}: {', '.join(entities)}\n"
     
@@ -1158,16 +942,12 @@ def get_whales():
         print("Docker container started")
         time.sleep(3)  # Give container time to fully start
         
-        get_top_market_dominance(limit=20)
         # Get insights from both sources
         entity_insights = get_entities()
-        congress_insights = get_congress_trades()
         
         # Format and return the final message
-        if entity_insights or congress_insights:
+        if entity_insights:
             all_insights = entity_insights or {}
-            if congress_insights:
-                all_insights.update(congress_insights)
             return format_insights_message(all_insights)
         else:
             return "No insights generated"
