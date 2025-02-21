@@ -200,7 +200,7 @@ def get_congress_trades():
             time.sleep(random.uniform(1, 2))
 
         if trades_that_day['Buy'] or trades_that_day['Sell']:
-            message = f"*Congress Traders (Most Recent Trade - {most_recent_date.strftime('%b %d')})*\n"
+            message = f"*Congress Traders* (Most Recent Trade - {most_recent_date.strftime('%b %d')})\n"
             
             # Process Buy trades
             if trades_that_day['Buy']:
