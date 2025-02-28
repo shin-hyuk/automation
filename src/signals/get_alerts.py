@@ -8,61 +8,90 @@ from googleapiclient.discovery import build
 from datetime import datetime, timedelta
 import base64
 
-# Load environment variables
+# Load environment variables and store the .env path
 load_dotenv()
+ENV_PATH = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../.env'))
 
 # Get the Gmail webhook credentials from env
 GMAIL_WEBHOOK = os.getenv("GMAIL_WEBHOOK")
+GMAIL_TOKEN = os.getenv("GMAIL_TOKEN")
+
 if not GMAIL_WEBHOOK:
-    raise ValueError("GMAIL_WEBHOOK not found in .env file")
+    raise ValueError(f"GMAIL_WEBHOOK not found in .env file at: {ENV_PATH}")
 
 try:
     # Convert JSON string to dictionary
     credentials_data = json.loads(GMAIL_WEBHOOK)
 except json.JSONDecodeError as e:
-    print("Error parsing GMAIL_WEBHOOK JSON. Make sure it's properly formatted in .env")
+    print(f"Error parsing GMAIL_WEBHOOK JSON in {ENV_PATH}. Make sure it's properly formatted.")
     raise
 
 # Define required scopes and paths
 SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
-TOKEN_PATH = os.path.join(os.path.dirname(__file__), "token.json")
+
+def update_env_with_token(token_json):
+    """Update .env file with new token"""
+    if not os.path.exists(ENV_PATH):
+        print(f"Error: .env file not found at {ENV_PATH}")
+        return
+    
+    # Read all lines from .env
+    with open(ENV_PATH, 'r') as file:
+        lines = file.readlines()
+    
+    token_line_exists = False
+    # Update the GMAIL_TOKEN line if it exists
+    for i, line in enumerate(lines):
+        if line.startswith('GMAIL_TOKEN='):
+            lines[i] = f'GMAIL_TOKEN=\'{token_json}\'\n'
+            token_line_exists = True
+            break
+    
+    # Add GMAIL_TOKEN line if it doesn't exist
+    if not token_line_exists:
+        # Ensure there's a newline before adding new entry
+        if lines and not lines[-1].endswith('\n'):
+            lines.append('\n')
+        lines.append(f'GMAIL_TOKEN=\'{token_json}\'\n')
+    
+    # Write back to .env
+    with open(ENV_PATH, 'w') as file:
+        file.writelines(lines)
+    print("Updated GMAIL_TOKEN in .env")
 
 def get_credentials():
     """Get valid credentials, using cached token if available."""
     creds = None
-
-    # Load existing credentials if available
-    if os.path.exists(TOKEN_PATH):
+    
+    # Try to use existing token if available
+    if GMAIL_TOKEN:
         try:
-            creds = Credentials.from_authorized_user_file(TOKEN_PATH, SCOPES)
-            print("Found existing credentials")
+            token_data = json.loads(GMAIL_TOKEN)
+            creds = Credentials.from_authorized_user_info(token_data, SCOPES)
+            print("Using existing token")
         except Exception as e:
-            print(f"Error loading existing credentials: {e}")
-            if os.path.exists(TOKEN_PATH):
-                os.remove(TOKEN_PATH)
-
-    # If credentials are invalid or do not exist, get new ones
+            print(f"Error loading existing token: {e}")
+    
+    # If no valid token, use web credentials to get new token
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            print("Refreshing expired credentials")
+            print("Refreshing expired token")
             try:
                 creds.refresh(Request())
+                update_env_with_token(creds.to_json())
             except Exception as e:
-                print(f"Error refreshing credentials: {e}")
+                print(f"Error refreshing token: {e}")
                 creds = None
         
         if not creds:
-            print("Getting new credentials")
-            flow = InstalledAppFlow.from_client_config(credentials_data, SCOPES)
-            creds = flow.run_local_server(port=8080, access_type="offline", prompt="consent")
-
-        # Save credentials for future use
-        try:
-            with open(TOKEN_PATH, "w") as token_file:
-                token_file.write(creds.to_json())
-            print("Credentials saved successfully")
-        except Exception as e:
-            print(f"Error saving credentials: {e}")
+            print("Getting new token using web credentials")
+            try:
+                flow = InstalledAppFlow.from_client_config(credentials_data, SCOPES)
+                creds = flow.run_local_server(port=8080, access_type='offline', prompt='consent')
+                update_env_with_token(creds.to_json())
+            except Exception as e:
+                print(f"Error in OAuth flow: {e}")
+                return None
 
     return creds
 
