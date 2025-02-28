@@ -4,7 +4,6 @@ import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 from dotenv import load_dotenv
-from datetime import datetime
 from utils import send_message
 from daily import get_daily1, get_daily2
 

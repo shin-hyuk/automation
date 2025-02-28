@@ -1,1 +1,1 @@
-from .get_signals import get_signals
+from .get_alerts import get_alerts

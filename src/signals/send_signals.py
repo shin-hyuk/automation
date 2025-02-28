@@ -14,10 +14,10 @@ TRADE_CHAT_IDS = os.getenv("TRADE_CHAT_IDS", "").split(",")
 async def send_signals():
     try:
         print("\nAnalyzing market signals...")
-        signal = get_alerts()
-        if signal:
+        msg = get_alerts()
+        if msg:
             print("Signals found, sending to channels...")
-            await send_message(signal, chat_ids=TRADE_CHAT_IDS)
+            await send_message(msg, chat_ids=TRADE_CHAT_IDS)
             print("Signals sent successfully")
         else:
             print("No trading signals detected")
