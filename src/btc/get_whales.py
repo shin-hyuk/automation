@@ -26,6 +26,7 @@ DB_NAME = os.getenv('DB_NAME')
 DB_PORT = int(os.getenv('DB_PORT', 3306))
 
 TOP_MARKET_SYMBOLS = ['BTC', 'ETH', 'XRP', 'BNB', 'SOL'] #USDT, USDC, WETH
+MUST_SYMBOLS = ['BTC', 'ETH']
 
 # Base URL for all entities
 BASE_URL = "https://intel.arkm.com/explorer/entity/"
@@ -347,16 +348,24 @@ def extract_holdings_and_value(html_content):
 
             # Convert B/M/K/T values to full numbers
             try:
-                if amount_text.endswith('T'):
-                    amount = float(amount_text[:-1]) * 1_000_000_000_000
-                elif amount_text.endswith('B'):
-                    amount = float(amount_text[:-1]) * 1_000_000_000
-                elif amount_text.endswith('M'):
-                    amount = float(amount_text[:-1]) * 1_000_000
-                elif amount_text.endswith('K'):
-                    amount = float(amount_text[:-1]) * 1_000
+                # Remove commas first
+                clean_amount = amount_text.replace(",", "")
+                
+                # Handle different suffixes
+                if clean_amount.endswith('T'):
+                    number = float(clean_amount[:-1])
+                    amount = number * 1_000_000_000_000
+                elif clean_amount.endswith('B'):
+                    number = float(clean_amount[:-1])
+                    amount = number * 1_000_000_000
+                elif clean_amount.endswith('M'):
+                    number = float(clean_amount[:-1])
+                    amount = number * 1_000_000
+                elif clean_amount.endswith('K'):
+                    number = float(clean_amount[:-1])
+                    amount = number * 1_000
                 else:
-                    amount = float(amount_text.replace(",", ""))
+                    amount = float(clean_amount)
 
                 # Validate the converted amount
                 if not isinstance(amount, (int, float)):
@@ -578,7 +587,6 @@ def get_max_changes(df, columns):
             if symbol not in TOP_MARKET_SYMBOLS:
                 continue
             try:
-                # Try to get USDT pair price
                 ticker = binance.fetch_ticker(f'{symbol}/USDT')
                 prices[symbol] = ticker['last']
             except Exception as e:
@@ -590,13 +598,14 @@ def get_max_changes(df, columns):
         
     assets = []
     messages = []
-    max_increase_value = (None, -float('inf'))  # (symbol, USD value)
-    max_decrease_value = (None, float('inf'))   # (symbol, USD value)
+    max_increase_value = (None, -float('inf'))
+    max_decrease_value = (None, float('inf'))
     
-    # Track streaks for each asset
     streaks = {}
-    changes = {}  # Store percentage changes for later use
+    changes = {}
+    all_changes = {}
     
+    # Process all symbols first
     for column in columns:
         if column not in df.columns or column not in TOP_MARKET_SYMBOLS or column not in prices:
             continue
@@ -610,10 +619,11 @@ def get_max_changes(df, columns):
             
         # Calculate daily change
         abs_change = today_value - yesterday_value
-        usd_value = abs_change * prices[column]  # Convert to USD value
+        usd_value = abs_change * prices[column]
         pct_change = 0 if yesterday_value == 0 else ((today_value - yesterday_value) / yesterday_value) * 100
         
-        changes[column] = pct_change  # Store for later use
+        changes[column] = pct_change
+        all_changes[column] = (usd_value, abs_change, pct_change)
         
         # Track max changes based on USD value
         if usd_value > 0 and usd_value > max_increase_value[1]:
@@ -621,7 +631,7 @@ def get_max_changes(df, columns):
         if usd_value < 0 and usd_value < max_decrease_value[1]:
             max_decrease_value = (column, usd_value, abs_change, pct_change)
             
-        # Calculate streak and total streak change
+        # Calculate streak
         streak_count = 1
         streak_start_value = yesterday_value
         
@@ -639,38 +649,71 @@ def get_max_changes(df, columns):
             total_streak_change = ((today_value - streak_start_value) / streak_start_value) * 100
             streaks[column] = (streak_count, total_streak_change)
     
-    # Format messages with streak information
-    if max_increase_value[0]:  # Check if we found any increases
+    processed_symbols = set()
+    
+    # Add max increase if it exists
+    if max_increase_value[0]:
         symbol, _, abs_change, pct_change = max_increase_value
         assets.append(symbol)
+        processed_symbols.add(symbol)
         formatted_change = f"{abs_change:.2f}" if abs(abs_change) < 1 else format(int(abs_change), ',')
         
-        # Add streak info only if total change is different from daily change
         streak_info = ""
         if symbol in streaks:
             streak_count, total_change = streaks[symbol]
-            if abs(total_change - pct_change) > 0.01:  # Use small threshold for float comparison
+            if abs(total_change - pct_change) > 0.01:
                 streak_info = f" | {streak_count}d (*{total_change:+.2f}%*)"
             
         messages.append(
             f"{symbol} +{formatted_change} (*{pct_change:+.2f}%*){streak_info}"
         )
-        
-    if max_decrease_value[0]:  # Check if we found any decreases
+    
+    # Add max decrease if it exists
+    if max_decrease_value[0]:
         symbol, _, abs_change, pct_change = max_decrease_value
         assets.append(symbol)
+        processed_symbols.add(symbol)
         formatted_change = f"{abs_change:.2f}" if abs(abs_change) < 1 else format(int(abs_change), ',')
         
-        # Add streak info only if total change is different from daily change
         streak_info = ""
         if symbol in streaks:
             streak_count, total_change = streaks[symbol]
-            if abs(total_change - pct_change) > 0.01:  # Use small threshold for float comparison
+            if abs(total_change - pct_change) > 0.01:
                 streak_info = f" | {streak_count}d (*{total_change:+.2f}%*)"
             
         messages.append(
             f"{symbol} {formatted_change} (*{pct_change:+.2f}%*){streak_info}"
         )
+    
+    # Handle MUST_SYMBOLS
+    must_symbols_with_changes = []
+    must_symbols_no_changes = []
+    
+    for symbol in MUST_SYMBOLS:
+        if symbol in all_changes and symbol not in processed_symbols:
+            usd_value, abs_change, pct_change = all_changes[symbol]
+            assets.append(symbol)
+            
+            # Consider very small changes (less than 0.01%) as no change
+            if abs(pct_change) < 0.01:
+                must_symbols_no_changes.append(symbol)
+            else:
+                formatted_change = f"{abs_change:.2f}" if abs(abs_change) < 1 else format(int(abs_change), ',')
+                streak_info = ""
+                if symbol in streaks:
+                    streak_count, total_change = streaks[symbol]
+                    if abs(total_change - pct_change) > 0.01:
+                        streak_info = f" | {streak_count}d (*{total_change:+.2f}%*)"
+                
+                sign = "+" if usd_value > 0 else ""
+                must_symbols_with_changes.append(
+                    f"{symbol} {sign}{formatted_change} (*{pct_change:+.2f}%*){streak_info}"
+                )
+    
+    # Add messages for MUST_SYMBOLS
+    messages.extend(must_symbols_with_changes)
+    if must_symbols_no_changes:
+        messages.append(f"{', '.join(must_symbols_no_changes)} (hold)")
     
     return list(set(assets)), messages
 
