@@ -206,16 +206,45 @@ def get_valuation_category(cost_ratio):
     else:  # > 1.5
         return "Strongly Overvalued"
 
+def get_insight():
+    today_date = datetime.now().strftime("%Y-%m-%d")
+    yesterday_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    today_data = get_data_by_date(today_date)
+    yesterday_data = get_data_by_date(yesterday_date)
+
+    if not today_data or not yesterday_data:
+        return None, ""
+
+    ratio_change = today_data["cost_ratio"] - yesterday_data["cost_ratio"]
+    
+    # Format valuation message
+    if today_data["valuation"] == yesterday_data["valuation"]:
+        valuation_msg = f"Remains {today_data['valuation']}"
+    else:
+        valuation_msg = f"{yesterday_data['valuation']} → {today_data['valuation']}"
+    
+    return ratio_change, valuation_msg
+
 def format_message(mining_cost, btc_price, cost_ratio, valuation):
     # Format numbers with commas
     mining_cost = "{:,}".format(mining_cost)
     btc_price = "{:,}".format(btc_price)
     
+    # Get ratio change and valuation message
+    ratio_change, valuation_msg = get_insight()
+    
+    # Format cost ratio with change
+    if ratio_change:
+        cost_ratio_display = f"{cost_ratio:.2f} ({ratio_change:+.2f})"
+    else:
+        cost_ratio_display = f"{cost_ratio:.2f}"
+    
     msg = f"⛏️ *Bitcoin Mining Cost*\n"
     msg += "```\n"
-    msg += f"{'Mining Cost':<15}{'BTC Price':<15}{'Cost Ratio':<15}{'Valuation':<20}\n"
-    msg += "-" * 67 + "\n"
-    msg += f"{f'${mining_cost}':<15}{f'${btc_price}':<15}{cost_ratio:<15}{valuation:<20}\n"
+    msg += f"{'Mining Cost':<15}{'BTC Price':<15}{'Cost Ratio':<15}{'Valuation':<25}\n"
+    msg += "-" * 72 + "\n"
+    msg += f"{f'${mining_cost}':<15}{f'${btc_price}':<15}{cost_ratio_display:<15}{valuation_msg:<25}\n"
     msg += "```"
     return msg
 
