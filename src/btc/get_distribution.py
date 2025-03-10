@@ -259,9 +259,9 @@ def generate_message(data):
 
 def get_distribution():
     # Set end_date to 2024/11/19 for debugging
-    debug_date = "2024/05/08"
-    df = get_data(end_date=debug_date)
-    # df = get_data()
+    # debug_date = "2024/05/08"
+    # df = get_data(end_date=debug_date)
+    df = get_data()
     msg = generate_message(df)
     return msg
 
