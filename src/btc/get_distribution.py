@@ -3,6 +3,7 @@ import pandas as pd
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 import requests
+import json
 
 URL = "https://bitinfocharts.com/bitcoin-distribution-history.html"
 
@@ -38,12 +39,20 @@ def get_data(start_date=None, end_date=None):
     # Extract dates and values
     dates = [row[0].replace('"', '') for row in data]
     values = [row[1:] for row in data]
-
-    # Convert to DataFrame
-    formatted_data = []
+    
+    # Create merged data dictionary
+    merged_data = {}
     for date, value_row in zip(dates, values):
-        new_data = {new_range: sum(value_row[RAW_RANGES.index(old_range)] for old_range in old_ranges if old_range in RAW_RANGES)
-                    for new_range, old_ranges in NEW_RANGES.items()}
+        merged_data[date] = {
+            new_range: sum(value_row[RAW_RANGES.index(old_range)] 
+                          for old_range in old_ranges if old_range in RAW_RANGES)
+            for new_range, old_ranges in NEW_RANGES.items()
+        }
+    
+    # Create DataFrame
+    formatted_data = []
+    for date, values_dict in merged_data.items():
+        new_data = values_dict.copy()
         new_data["Date"] = date
         formatted_data.append(new_data)
 
@@ -204,9 +213,15 @@ def get_insight(df):
 
 def generate_message(data):
     today = data.iloc[-1]  # Most recent date
+    print(today)
     yesterday = data.iloc[-2]  # One day before
     day_before_yesterday = data.iloc[-3]  # Two days before
     last_month = data.iloc[-31]  # 30 days ago
+
+    print(today)
+    print(yesterday)
+    print(day_before_yesterday)
+    print(last_month)
 
     # Calculate changes
     today_changes = today - yesterday
@@ -243,6 +258,12 @@ def generate_message(data):
     return msg
 
 def get_distribution():
-    df = get_data()
+    # Set end_date to 2024/11/19 for debugging
+    debug_date = "2024/05/08"
+    df = get_data(end_date=debug_date)
+    # df = get_data()
     msg = generate_message(df)
     return msg
+
+if __name__ == "__main__":
+    print(get_distribution())
