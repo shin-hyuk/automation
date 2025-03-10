@@ -234,6 +234,10 @@ def format_message(mining_cost, btc_price, cost_ratio, valuation):
     # Get ratio change and valuation message
     ratio_change, valuation_msg = get_insight()
     
+    # If no previous data exists, just use current valuation
+    if not valuation_msg:
+        valuation_msg = valuation
+    
     # Format cost ratio with change
     if ratio_change:
         cost_ratio_display = f"{cost_ratio:.2f} ({ratio_change:+.2f})"
